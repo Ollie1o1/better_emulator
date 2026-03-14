@@ -1,6 +1,6 @@
 pub mod mappers;
 
-use mappers::{Mapper000, Mapper001, MapperEnum};
+use mappers::{Mapper000, Mapper001, Mapper002, MapperEnum};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Mirroring {
@@ -84,6 +84,7 @@ impl Cartridge {
         let mapper: MapperEnum = match mapper_id {
             0 => Mapper000::new(prg_banks as u8, chr_banks as u8, mirroring).into(),
             1 => Mapper001::new(prg_banks as u8, chr_banks as u8, mirroring).into(),
+            2 => Mapper002::new(prg_banks as u8, mirroring).into(),
             _ => return Err(CartridgeError::UnsupportedMapper(mapper_id)),
         };
 

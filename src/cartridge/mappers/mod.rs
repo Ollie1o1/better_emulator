@@ -1,8 +1,10 @@
 mod mapper000;
 mod mapper001;
+mod mapper002;
 
 pub use mapper000::Mapper000;
 pub use mapper001::Mapper001;
+pub use mapper002::Mapper002;
 
 use crate::cartridge::Mirroring;
 
@@ -25,6 +27,7 @@ pub trait Mapper {
 pub enum MapperEnum {
     M000(Mapper000),
     M001(Mapper001),
+    M002(Mapper002),
 }
 
 impl MapperEnum {
@@ -32,42 +35,49 @@ impl MapperEnum {
         match self {
             Self::M000(m) => m.cpu_map_read(addr),
             Self::M001(m) => m.cpu_map_read(addr),
+            Self::M002(m) => m.cpu_map_read(addr),
         }
     }
     pub fn cpu_map_write(&mut self, addr: u16, val: u8) -> MappedAddr {
         match self {
             Self::M000(m) => m.cpu_map_write(addr, val),
             Self::M001(m) => m.cpu_map_write(addr, val),
+            Self::M002(m) => m.cpu_map_write(addr, val),
         }
     }
     pub fn ppu_map_read(&self, addr: u16) -> usize {
         match self {
             Self::M000(m) => m.ppu_map_read(addr),
             Self::M001(m) => m.ppu_map_read(addr),
+            Self::M002(m) => m.ppu_map_read(addr),
         }
     }
     pub fn ppu_map_write(&mut self, addr: u16) -> usize {
         match self {
             Self::M000(m) => m.ppu_map_write(addr),
             Self::M001(m) => m.ppu_map_write(addr),
+            Self::M002(m) => m.ppu_map_write(addr),
         }
     }
     pub fn mirroring(&self) -> Mirroring {
         match self {
             Self::M000(m) => m.mirroring(),
             Self::M001(m) => m.mirroring(),
+            Self::M002(m) => m.mirroring(),
         }
     }
     pub fn irq_active(&self) -> bool {
         match self {
             Self::M000(m) => m.irq_active(),
             Self::M001(m) => m.irq_active(),
+            Self::M002(m) => m.irq_active(),
         }
     }
     pub fn irq_clear(&mut self) {
         match self {
             Self::M000(m) => m.irq_clear(),
             Self::M001(m) => m.irq_clear(),
+            Self::M002(m) => m.irq_clear(),
         }
     }
 }
@@ -77,4 +87,7 @@ impl From<Mapper000> for MapperEnum {
 }
 impl From<Mapper001> for MapperEnum {
     fn from(m: Mapper001) -> Self { Self::M001(m) }
+}
+impl From<Mapper002> for MapperEnum {
+    fn from(m: Mapper002) -> Self { Self::M002(m) }
 }
