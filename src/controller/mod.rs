@@ -17,24 +17,30 @@ pub struct Controller {
 
 impl Controller {
     pub fn new() -> Self {
-        Self { buttons: 0, strobe: false, shift: 0 }
+        Self { buttons: 0, strobe: false, shift: 0xFF }
     }
 
     pub fn write(&mut self, val: u8) {
-        self.strobe = val & 1 == 1;
-        if self.strobe {
+        let new_strobe = val & 1 == 1;
+        // Latch on falling edge (1 → 0): freeze current button state into shift register.
+        // While strobe is high the shift register is continuously refreshed; reads return A.
+        if self.strobe && !new_strobe {
             self.shift = self.buttons;
         }
+        self.strobe = new_strobe;
     }
 
     pub fn read(&mut self) -> u8 {
         if self.strobe {
-            return ((self.buttons & buttons::A) != 0) as u8 | 0x40;
+            // While strobe is high: continuously return current A button state.
+            return (self.buttons & buttons::A != 0) as u8;
         }
+        // Serial output: shift out one bit per read.
+        // Reads 1-8 → A, B, Select, Start, Up, Down, Left, Right.
+        // Reads 9+ return 1 (open bus / unconnected).
         let bit = self.shift & 1;
-        self.shift >>= 1;
-        self.shift |= 0x80;
-        bit | 0x40
+        self.shift = (self.shift >> 1) | 0x80; // shift in 1s for reads 9+
+        bit
     }
 }
 

@@ -79,7 +79,7 @@ impl Bus {
         }
     }
 
-    /// Tick PPU 3 times and APU 1 time. Returns true if a frame completed.
+    #[allow(dead_code)]
     pub fn tick_components(&mut self) -> bool {
         let mut frame_done = false;
         for _ in 0..3 {

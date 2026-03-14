@@ -12,7 +12,8 @@
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(curl:*)",
-      "Bash(# Check retrobrews for bladebuster with correct filename\ncurl -s \"https://api.github.com/repos/retrobrews/nes-games/git/trees/master?recursive=1\" | python3 -c \"import sys,json; t=json.load\\(sys.stdin\\); [print\\(f['path']\\) for f in t.get\\('tree',[]\\) if f['path'].endswith\\('.nes'\\)]\" 2>&1)"
+      "Bash(# Check retrobrews for bladebuster with correct filename\ncurl -s \"https://api.github.com/repos/retrobrews/nes-games/git/trees/master?recursive=1\" | python3 -c \"import sys,json; t=json.load\\(sys.stdin\\); [print\\(f['path']\\) for f in t.get\\('tree',[]\\) if f['path'].endswith\\('.nes'\\)]\" 2>&1)",
+      "Bash(start:*)"
     ]
   }
 }

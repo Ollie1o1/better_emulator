@@ -139,7 +139,7 @@ impl Cpu {
 
     // ---- Addressing modes ----
 
-    fn addr_imm(&mut self, bus: &mut Bus) -> (u16, bool) {
+    fn addr_imm(&mut self, _bus: &mut Bus) -> (u16, bool) {
         let a = self.pc;
         self.pc = self.pc.wrapping_add(1);
         (a, false)
