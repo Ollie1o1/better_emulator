@@ -1,3 +1,4 @@
 /target
 roms/*.nes
 saves/*.sav
+.claude/
