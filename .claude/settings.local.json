@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir C:\\\\Users\\\\Oliver\\\\desktop\\\\better_emulator:*)",
+      "Bash(cargo check:*)",
+      "Bash(where cargo)",
+      "Read(//c/Users/Oliver/.cargo/bin/**)",
+      "Bash(cmd.exe:*)"
+    ]
+  }
+}
