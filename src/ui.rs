@@ -65,7 +65,7 @@ fn indicator(buf: &mut [u8], x: usize, y: usize, w: usize, h: usize,
 // ── Public render function ─────────────────────────────────────────────────────
 
 /// Fill `buf` (ARGB8888, BAR_W × BAR_H) with the status bar for this frame.
-pub fn render_status(buf: &mut [u8], buttons: u8, fps: f32) {
+pub fn render_status(buf: &mut [u8], buttons: u8, fps: f32, volume: f32) {
     // ── Background ─────────────────────────────────────────────────────────────
     for i in 0..BAR_W * BAR_H {
         let o = i * 4;
@@ -134,6 +134,18 @@ pub fn render_status(buf: &mut [u8], buttons: u8, fps: f32) {
     px(buf, fps_end_x + 1, cy + 4, 90, 130, 60);
     px(buf, fps_end_x + 2, cy + 3, 90, 130, 60);
     px(buf, fps_end_x + 3, cy + 2, 90, 130, 60);
+
+    // ── Volume bar (between FPS and A/B buttons) ───────────────────────────────
+    // 10 segments × 4px gap = 40px bar, positioned right of FPS
+    let vol_x = BAR_W / 2 + 18;
+    let vol_segs = 10usize;
+    let lit = (volume * vol_segs as f32).round() as usize;
+    for i in 0..vol_segs {
+        let bx = vol_x + i * 4;
+        let on = i < lit;
+        let (r, g, b) = if on { (60, 190, 140) } else { (18, 50, 38) };
+        fill_rect(buf, bx, cy, 3, 5, r, g, b);
+    }
 
     // ── A / B buttons (right side, circular approximation) ────────────────────
     let a_on = buttons & 0x01 != 0;

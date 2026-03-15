@@ -119,16 +119,26 @@ fn main() {
 
     let mut event_pump = sdl.event_pump().expect("Event pump");
     let mut audio_buf: Vec<f32> = Vec::with_capacity(4096);
+    let mut volume: f32 = 0.8;
 
     let mut fps_timer  = Instant::now();
     let mut fps_frames = 0u32;
     let mut fps        = 60.0f32;
 
     'main: loop {
+
         // ── Events ────────────────────────────────────────────────────────────
         for event in event_pump.poll_iter() {
-            if let Event::Quit { .. } = event { break 'main; }
-            if let Event::KeyDown { keycode: Some(Keycode::Escape), .. } = event { break 'main; }
+            match event {
+                Event::Quit { .. } => break 'main,
+                Event::KeyDown { keycode: Some(k), .. } => match k {
+                    Keycode::Escape => break 'main,
+                    Keycode::RightBracket => volume = (volume + 0.1).min(1.0),
+                    Keycode::LeftBracket  => volume = (volume - 0.1).max(0.0),
+                    _ => {}
+                },
+                _ => {}
+            }
         }
 
         // ── Controller input ──────────────────────────────────────────────────
@@ -182,7 +192,7 @@ fn main() {
         }
 
         // ── Render status bar into cpu buffer ──────────────────────────────────
-        ui::render_status(&mut bar_buf, btn, fps);
+        ui::render_status(&mut bar_buf, btn, fps, volume);
 
         // ── Upload textures ────────────────────────────────────────────────────
         game_tex.update(None, &game_buf, SCREEN_WIDTH * 4).expect("game tex update");
@@ -223,6 +233,7 @@ fn main() {
 
         // ── Audio ──────────────────────────────────────────────────────────────
         emu.bus.apu.drain_samples(&mut audio_buf);
+        for s in &mut audio_buf { *s *= volume; }
         // Cap queue to ~50ms to avoid audio lag building up.
         if audio_queue.size() < (AUDIO_SAMPLE_RATE / 20) * 4 {
             audio_queue.queue_audio(&audio_buf).ok();

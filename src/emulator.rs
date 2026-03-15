@@ -95,5 +95,6 @@ impl Emulator {
         loop {
             if self.clock() { break; }
         }
+        // Debug: print PPU state every 60 frames for first 5 seconds
     }
 }

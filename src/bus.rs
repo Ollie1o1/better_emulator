@@ -56,7 +56,8 @@ impl Bus {
     pub fn cpu_write(&mut self, addr: u16, val: u8) {
         match addr {
             0x0000..=0x1FFF => {
-                self.ram[(addr & 0x07FF) as usize] = val;
+                let idx = (addr & 0x07FF) as usize;
+                self.ram[idx] = val;
             }
             0x2000..=0x3FFF => {
                 let reg = addr & 0x0007;

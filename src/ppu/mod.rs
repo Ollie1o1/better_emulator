@@ -289,10 +289,15 @@ impl Ppu {
     fn tick_prerender(&mut self, cart: &mut Cartridge) {
         if self.dot == 1 {
             self.status &= !0xE0; // clear vblank, sprite-zero-hit, overflow
+            self.update_nmi();    // falling edge: reset nmi_prev so next vblank re-triggers NMI
         }
         if self.rendering_enabled() {
-            self.fetch_bg_tile(cart);
-            self.shift_bg();
+            if self.dot >= 1 && self.dot <= 256 || self.dot >= 321 && self.dot <= 336 {
+                self.fetch_bg_tile(cart);
+            }
+            if self.dot >= 1 && self.dot <= 336 {
+                self.shift_bg();
+            }
 
             // Copy horizontal bits from t to v on dot 257
             if self.dot == 257 {
@@ -316,15 +321,15 @@ impl Ppu {
         }
         if self.rendering_enabled() {
             if self.dot <= 256 {
-                self.shift_bg();
                 self.fetch_bg_tile(cart);
                 self.render_pixel(cart);
+                self.shift_bg();
             } else if self.dot == 257 {
                 self.copy_horiz();
                 self.load_sprites(cart);
             } else if self.dot >= 321 && self.dot <= 336 {
-                self.shift_bg();
                 self.fetch_bg_tile(cart);
+                self.shift_bg();
             }
         }
     }
