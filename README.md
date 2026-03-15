@@ -22,28 +22,85 @@ winget install Kitware.CMake
 
 ## Controls
 
+### Game Buttons
+
 | NES Button | Keys |
 |-----------|------|
 | A | `Z` or `Alt` |
 | B | `X` or `Ctrl` |
-| **Start** | **`Enter`, `Space`, or numpad Enter** |
+| **Start** | `Enter`, `Space`, or numpad Enter |
 | Select | `Shift`, `Tab`, or `Backspace` |
-| D-pad | Arrow keys or `WASD` |
-| Quit | `Escape` |
+| D-pad Up | `↑` or `W` |
+| D-pad Down | `↓` or `S` |
+| D-pad Left | `←` or `A` |
+| D-pad Right | `→` or `D` |
+
+### Emulator Controls
+
+| Key | Action |
+|-----|--------|
+| `]` | Volume up (10%) |
+| `[` | Volume down (10%) |
+| `Escape` | Quit |
+
+## Playing Games
+
+### 1. Launch a game
+
+```bash
+cargo run --release -- roms/nova_the_squirrel.nes
+```
+
+Replace the path with any `.nes` file. On Windows you can also drag a ROM onto the executable.
+
+### 2. At a title screen
+
+Most games show a title screen first. Press **Start** (`Enter`) to begin. Some games also need **Select** (`Shift`) to choose a mode before starting.
+
+### 3. In-game tips
+
+- **2048** — Use the arrow keys or WASD to slide tiles. No Start needed, tiles move immediately.
+- **Flappy Bird** — Press `Z` (A button) to flap.
+- **Nova the Squirrel** — `Z` to jump, `X` to attack. **Start** pauses.
+- **Twin Dragons** — Same controls. A second player can join by mapping a second controller (not yet supported; play in single-player mode).
+- **Thwaite** — Arrow keys aim, `Z` fires.
+- **Assimilate** — Arrow keys to move.
+
+### 4. Adjust the volume
+
+Press `]` to turn music up and `[` to turn it down. The teal bar in the status strip at the bottom of the window shows the current level (10 segments = 100%).
+
+## Status Bar
+
+The strip along the bottom of the window shows live info while you play:
+
+```
+[D-pad]  [SEL] [START]    [FPS]   [volume bar]   [B] [A]
+```
+
+| Element | What it shows |
+|---------|---------------|
+| D-pad cross | Which direction is held |
+| SEL / START pads | Whether Select / Start is pressed |
+| FPS counter | Frames per second — green ≥58, yellow ≥45, red <45 |
+| Teal bar (10 segments) | Music volume (0–100%) |
+| B / A circles | Whether B / A is pressed |
 
 ## Included Free Games
 
 All games in `roms/` are free, open-source homebrew:
 
-| File | Genre | Notes |
-|------|-------|-------|
-| `nova_the_squirrel.nes` | Platformer | Full game — closest to Mario in feel |
-| `twin_dragons.nes` | Action platformer | 1 or 2 player co-op |
-| `assimilate.nes` | Puzzle | Pac-Man style |
-| `flappy_bird.nes` | Arcade | NES port of Flappy Bird |
-| `2048.nes` | Puzzle | 2048 on NES |
-| `thwaite.nes` | Shooter | Missile Command style |
-| `nestest.nes` | CPU test | Developer validation ROM |
+| File | Genre | How to start |
+|------|-------|--------------|
+| `nova_the_squirrel.nes` | Platformer | Press **Start** at title screen |
+| `twin_dragons.nes` | Action platformer | Press **Start** at title screen |
+| `assimilate.nes` | Puzzle | Press **Start** at title screen |
+| `flappy_bird.nes` | Arcade | Press **A** (`Z`) to begin |
+| `2048.nes` | Puzzle | Press **Start** at title screen |
+| `thwaite.nes` | Shooter | Press **Start** at title screen |
+| `nestest.nes` | CPU test ROM | Developer validation, no gameplay |
+
+## Playing Your Own ROMs
 
 To play a commercial game (e.g. Super Mario Bros), provide your own legally-obtained `.nes` ROM:
 
@@ -64,9 +121,9 @@ The emulator runs games using the three most common NES mappers:
 ## UI
 
 - **Scanlines** — every other row dimmed 20% for a CRT look
-- **8:7 aspect ratio** — NES pixels are non-square; the display is stretched correctly to 292×240
-- **Status bar** — shows live D-pad, button state, and FPS counter with color coding (green ≥58fps, yellow ≥45fps, red <45fps)
-- **Window title** — shows ROM name and FPS
+- **8:7 aspect ratio** — NES pixels are non-square; display is stretched to 292×240
+- **Status bar** — live button state, FPS counter, and volume indicator
+- **Window title** — shows ROM name and live FPS
 
 ## Architecture
 
@@ -74,8 +131,8 @@ The emulator runs games using the three most common NES mappers:
 src/
 ├── main.rs              # SDL2 window, input, render loop
 ├── emulator.rs          # Clock orchestrator (CPU/PPU/APU sync)
-├── bus.rs               # Memory bus — all address decode and memory-mapped I/O
-├── ui.rs                # Status bar renderer (embedded 3×5 pixel font, button indicators)
+├── bus.rs               # Memory bus — address decode and memory-mapped I/O
+├── ui.rs                # Status bar renderer (embedded 3×5 pixel font, indicators)
 ├── cpu/mod.rs           # Ricoh 2A03 (6502) — all official + common unofficial opcodes
 ├── ppu/mod.rs           # PPU — Loopy scroll, background/sprite rendering, 256×240 ARGB output
 ├── apu/                 # APU — pulse (×2), triangle, noise, DMC channels
