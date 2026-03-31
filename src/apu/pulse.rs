@@ -63,7 +63,7 @@ impl Pulse {
     pub fn write_ctrl(&mut self, val: u8) {
         self.duty_mode     = (val >> 6) & 0x03;
         self.length_halt   = val & 0x20 != 0;
-        self.env_loop      = val & 0x20 != 0;
+        self.env_loop      = val & 0x40 != 0;
         self.env_constant  = val & 0x10 != 0;
         self.env_period    = val & 0x0F;
         self.env_volume    = val & 0x0F;

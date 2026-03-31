@@ -8,15 +8,43 @@ pub struct Emulator {
     pub cpu: Cpu,
     pub bus: Bus,
     total_cycles: u64,
+    rom_path: String,
 }
 
 impl Emulator {
-    pub fn new(rom_data: &[u8], audio_sample_rate: u32) -> Result<Self, Box<dyn std::error::Error>> {
-        let cartridge = Cartridge::from_ines(rom_data)?;
+    pub fn new(rom_data: &[u8], audio_sample_rate: u32, rom_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut cartridge = Cartridge::from_ines(rom_data)?;
+
+        // Load battery-backed save RAM if it exists
+        if cartridge.has_battery {
+            let sav_path = sav_path_for(rom_path);
+            match std::fs::read(&sav_path) {
+                Ok(data) => {
+                    let len = data.len().min(cartridge.prg_ram.len());
+                    cartridge.prg_ram[..len].copy_from_slice(&data[..len]);
+                    log::info!("Loaded battery save from {}", sav_path);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => log::warn!("Could not load battery save {}: {}", sav_path, e),
+            }
+        }
+
         let mut bus = Bus::new(cartridge, audio_sample_rate);
         let mut cpu = Cpu::new();
         cpu.reset(&mut bus);
-        Ok(Self { cpu, bus, total_cycles: 0 })
+        Ok(Self { cpu, bus, total_cycles: 0, rom_path: rom_path.to_string() })
+    }
+
+    /// Write battery-backed PRG RAM to a .sav file next to the ROM.
+    pub fn save_battery(&self) {
+        if !self.bus.cartridge.has_battery {
+            return;
+        }
+        let sav_path = sav_path_for(&self.rom_path);
+        match std::fs::write(&sav_path, &self.bus.cartridge.prg_ram) {
+            Ok(_) => log::info!("Saved battery RAM to {}", sav_path),
+            Err(e) => eprintln!("Failed to save battery RAM to {}: {}", sav_path, e),
+        }
     }
 
     /// Step the system by one CPU instruction.
@@ -95,6 +123,14 @@ impl Emulator {
         loop {
             if self.clock() { break; }
         }
-        // Debug: print PPU state every 60 frames for first 5 seconds
+    }
+}
+
+fn sav_path_for(rom_path: &str) -> String {
+    // Replace .nes extension with .sav, or append .sav if no extension
+    if let Some(stem) = rom_path.strip_suffix(".nes") {
+        format!("{}.sav", stem)
+    } else {
+        format!("{}.sav", rom_path)
     }
 }

@@ -47,6 +47,10 @@ fn main() {
         eprintln!("  Shift / Tab   = Select");
         eprintln!("  Arrow keys / WASD = D-pad");
         eprintln!("  Escape        = Quit");
+        eprintln!();
+        eprintln!("Player 2 (numpad):");
+        eprintln!("  KP1=A  KP2=B  KP3=Select  KP4=Start");
+        eprintln!("  KP8=Up  KP5=Down  KP6=Left  KP9=Right");
         std::process::exit(1);
     }
 
@@ -63,7 +67,7 @@ fn main() {
         Err(e) => { eprintln!("Failed to read '{}': {}", rom_path, e); std::process::exit(1); }
     };
 
-    let mut emu = match Emulator::new(&rom_data, AUDIO_SAMPLE_RATE) {
+    let mut emu = match Emulator::new(&rom_data, AUDIO_SAMPLE_RATE, rom_path) {
         Ok(e) => e,
         Err(e) => { eprintln!("Failed to load ROM: {}", e); std::process::exit(1); }
     };
@@ -130,9 +134,9 @@ fn main() {
         // ── Events ────────────────────────────────────────────────────────────
         for event in event_pump.poll_iter() {
             match event {
-                Event::Quit { .. } => break 'main,
+                Event::Quit { .. } => { emu.save_battery(); break 'main; }
                 Event::KeyDown { keycode: Some(k), .. } => match k {
-                    Keycode::Escape => break 'main,
+                    Keycode::Escape => { emu.save_battery(); break 'main; }
                     Keycode::RightBracket => volume = (volume + 0.1).min(1.0),
                     Keycode::LeftBracket  => volume = (volume - 0.1).max(0.0),
                     _ => {}
@@ -171,6 +175,18 @@ fn main() {
         if ks.is_scancode_pressed(Scancode::Right) || ks.is_scancode_pressed(Scancode::D) { btn |= buttons::RIGHT; }
 
         emu.bus.controller1.buttons = btn;
+
+        // Player 2: numpad/secondary keys
+        let mut btn2 = 0u8;
+        if ks.is_scancode_pressed(Scancode::Kp1) { btn2 |= buttons::A; }
+        if ks.is_scancode_pressed(Scancode::Kp2) { btn2 |= buttons::B; }
+        if ks.is_scancode_pressed(Scancode::Kp3) { btn2 |= buttons::SELECT; }
+        if ks.is_scancode_pressed(Scancode::Kp4) { btn2 |= buttons::START; }
+        if ks.is_scancode_pressed(Scancode::Kp8) { btn2 |= buttons::UP; }
+        if ks.is_scancode_pressed(Scancode::Kp5) { btn2 |= buttons::DOWN; }
+        if ks.is_scancode_pressed(Scancode::Kp6) { btn2 |= buttons::LEFT; }
+        if ks.is_scancode_pressed(Scancode::Kp9) { btn2 |= buttons::RIGHT; }
+        emu.bus.controller2.buttons = btn2;
 
         // ── Emulate one frame ─────────────────────────────────────────────────
         emu.run_frame();
