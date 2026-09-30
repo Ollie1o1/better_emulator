@@ -239,7 +239,7 @@ impl Cpu {
         let ptr = (hi << 8) | lo;
         // 6502 page-crossing bug for JMP indirect
         let addr_lo = bus.cpu_read(ptr) as u16;
-        let addr_hi = bus.cpu_read((ptr & 0xFF00) | ((ptr + 1) & 0x00FF)) as u16;
+        let addr_hi = bus.cpu_read((ptr & 0xFF00) | (ptr.wrapping_add(1) & 0x00FF)) as u16;
         ((addr_hi << 8) | addr_lo, false)
     }
 

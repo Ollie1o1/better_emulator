@@ -38,8 +38,8 @@ pub struct Ppu {
     suppress_vbl: bool,
     latch_refreshed_at: [u64; 8],  // frame number each bit was last driven
 
-    // VRAM
-    pub name_table: [[u8; 0x400]; 2],
+    // VRAM: 2 KB in the console; four-screen carts add the other 2 KB
+    pub name_table: [[u8; 0x400]; 4],
     pub palette_ram: [u8; 32],
 
     // OAM
@@ -93,7 +93,7 @@ impl Ppu {
             io_latch: 0,
             suppress_vbl: false,
             latch_refreshed_at: [0; 8],
-            name_table: [[0u8; 0x400]; 2],
+            name_table: [[0u8; 0x400]; 4],
             palette_ram: [0u8; 32],
             oam: [0u8; 256],
             bg_pattern_lo: 0, bg_pattern_hi: 0,

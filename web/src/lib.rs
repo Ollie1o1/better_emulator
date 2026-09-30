@@ -30,20 +30,20 @@ pub extern "C" fn rom_buffer(len: usize) -> *mut u8 {
     s.rom.as_mut_ptr()
 }
 
-/// Boot the ROM previously copied into `rom_buffer`. Returns 1 on success.
+/// Boot the ROM previously copied into `rom_buffer`. Returns 1 on success;
+/// on failure the game that was already running keeps running.
 #[no_mangle]
 pub extern "C" fn load_rom(sample_rate: u32) -> u32 {
     let s = state();
-    match Emulator::new(&s.rom, sample_rate) {
+    let result = Emulator::new(&s.rom, sample_rate);
+    s.rom = Vec::new();
+    match result {
         Ok(emu) => {
             s.emu = Some(emu);
             s.rgba = vec![0; SCREEN_WIDTH * SCREEN_HEIGHT * 4];
             1
         }
-        Err(_) => {
-            s.emu = None;
-            0
-        }
+        Err(_) => 0,
     }
 }
 

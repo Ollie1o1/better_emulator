@@ -77,7 +77,9 @@
 
   const $ = (id) => document.getElementById(id);
   const status = $('status');
-  const player = await createPlayer({ canvas: $('screen'), wasmUrl: 'nes_web.wasm' });
+  const player = await createPlayer({
+    canvas: $('screen'), wasmUrl: 'nes_web.wasm', onError: (e) => { status.textContent = e.message; },
+  });
 
   async function load(fn) {
     status.textContent = '';

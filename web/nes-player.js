@@ -2,13 +2,17 @@
 // compiled to WebAssembly) with a canvas, keyboard/touch input and audio.
 //
 //   import { createPlayer } from './nes-player.js';
-//   const player = await createPlayer({ canvas, wasmUrl: 'nes_web.wasm' });
+//   const player = await createPlayer({ canvas, wasmUrl: 'nes_web.wasm', onError });
 //   await player.loadRomUrl('roms/thwaite.nes');
 //   player.start();          // must follow a user gesture (autoplay rules)
 
 const W = 256, H = 240;
 const NES_FPS = 60.0988;
 const FRAME_MS = 1000 / NES_FPS;
+// Largest board the supported mappers address is 512 KB PRG + 256 KB CHR;
+// refusing anything far beyond that keeps a stray huge file from exhausting
+// wasm memory.
+const MAX_ROM_BYTES = 4 * 1024 * 1024;
 
 export const BUTTONS = { A: 1, B: 2, SELECT: 4, START: 8, UP: 16, DOWN: 32, LEFT: 64, RIGHT: 128 };
 
@@ -17,7 +21,7 @@ const KEYMAP = {
   ArrowUp: 'UP', ArrowDown: 'DOWN', ArrowLeft: 'LEFT', ArrowRight: 'RIGHT',
   KeyW: 'UP', KeyS: 'DOWN', KeyA: 'LEFT', KeyD: 'RIGHT',
   KeyZ: 'A', KeyK: 'A', KeyX: 'B', KeyJ: 'B',
-  Enter: 'START', Space: 'START', ShiftLeft: 'SELECT', ShiftRight: 'SELECT', Tab: 'SELECT',
+  Enter: 'START', Space: 'START', ShiftLeft: 'SELECT', ShiftRight: 'SELECT',
 };
 
 // AudioWorklet: a FIFO of sample chunks posted from the main thread.
@@ -49,7 +53,7 @@ class NesAudio extends AudioWorkletProcessor {
 registerProcessor('nes-audio', NesAudio);
 `;
 
-export async function createPlayer({ canvas, wasmUrl, volume = 0.6 }) {
+export async function createPlayer({ canvas, wasmUrl, volume = 0.6, onError = console.error }) {
   const { instance } = await WebAssembly.instantiateStreaming(fetch(wasmUrl), {});
   const wasm = instance.exports;
 
@@ -66,6 +70,8 @@ export async function createPlayer({ canvas, wasmUrl, volume = 0.6 }) {
   let tapped = 0;
   let romLoaded = false;
   let bootRate = 0;   // audio sample rate the current ROM was booted with
+  let crashed = false; // a wasm trap leaves the instance unusable
+  let loadSeq = 0;     // only the most recent ROM request may boot
 
   async function initAudio() {
     if (audioCtx) return;
@@ -80,12 +86,15 @@ export async function createPlayer({ canvas, wasmUrl, volume = 0.6 }) {
   }
 
   function boot(bytes) {
+    if (bytes.length > MAX_ROM_BYTES) throw new Error('File is too large to be an NES ROM');
     const ptr = wasm.rom_buffer(bytes.length);
     new Uint8Array(wasm.memory.buffer, ptr, bytes.length).set(bytes);
     const rate = audioCtx ? audioCtx.sampleRate : 44100;
     bootRate = rate;
-    if (!wasm.load_rom(rate)) throw new Error('Unsupported or invalid ROM (mappers 0, 1, 2, 3, 4 and 7 are supported)');
+    // On failure the previous game is left running
+    if (!wasm.load_rom(rate)) throw new Error('Not a supported NES ROM (iNES file, mappers 0, 1, 2, 3, 4 or 7)');
     romLoaded = true;
+    romBytes = bytes;
     audioNode?.port.postMessage('flush');
     acc = 0;
   }
@@ -116,6 +125,12 @@ export async function createPlayer({ canvas, wasmUrl, volume = 0.6 }) {
     ctx2d.putImageData(image, 0, 0);
   }
 
+  function stop() {
+    running = false;
+    cancelAnimationFrame(rafId);
+    audioCtx?.suspend();
+  }
+
   function loop(now) {
     rafId = requestAnimationFrame(loop);
     const dt = now - last;
@@ -123,13 +138,19 @@ export async function createPlayer({ canvas, wasmUrl, volume = 0.6 }) {
     // Tab was hidden / long stall: resync instead of fast-forwarding
     acc = dt > 250 ? FRAME_MS : acc + dt;
     let ran = 0;
-    // Paced to the NES's 60.1 Hz regardless of display refresh (120/144 Hz)
-    while (acc >= FRAME_MS && ran < 3) {
-      frame();
-      acc -= FRAME_MS;
-      ran++;
+    try {
+      // Paced to the NES's 60.1 Hz regardless of display refresh (120/144 Hz)
+      while (acc >= FRAME_MS && ran < 3) {
+        frame();
+        acc -= FRAME_MS;
+        ran++;
+      }
+      if (ran) draw();
+    } catch (e) {
+      crashed = true;
+      stop();
+      onError(new Error(`The emulator stopped unexpectedly; reload the page to play again. (${e.message})`));
     }
-    if (ran) draw();
   }
 
   // Keyboard is captured only while the player element has focus, so the
@@ -153,19 +174,25 @@ export async function createPlayer({ canvas, wasmUrl, volume = 0.6 }) {
   return {
     /** Fetch and boot a ROM by URL. */
     async loadRomUrl(url) {
+      const seq = ++loadSeq;
       const res = await fetch(url);
       if (!res.ok) throw new Error(`Could not load ${url} (${res.status})`);
-      romBytes = new Uint8Array(await res.arrayBuffer());
-      boot(romBytes);
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (seq !== loadSeq) return; // superseded by a newer load
+      boot(bytes);
       if (!running) preview();
     },
     /** Boot a ROM from a File (file picker / drag and drop). */
     async loadRomFile(file) {
-      romBytes = new Uint8Array(await file.arrayBuffer());
-      boot(romBytes);
+      const seq = ++loadSeq;
+      if (file.size > MAX_ROM_BYTES) throw new Error('File is too large to be an NES ROM');
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (seq !== loadSeq) return;
+      boot(bytes);
     },
     /** Start emulation. Call from a click/keypress so audio may start. */
     async start() {
+      if (crashed) throw new Error('The emulator stopped unexpectedly; reload the page to play again.');
       await initAudio();
       await audioCtx.resume();
       // First start: the ROM was booted before audio existed; re-boot at the
@@ -177,12 +204,8 @@ export async function createPlayer({ canvas, wasmUrl, volume = 0.6 }) {
       rafId = requestAnimationFrame(loop);
       focusTarget.focus({ preventScroll: true });
     },
-    pause() {
-      running = false;
-      cancelAnimationFrame(rafId);
-      audioCtx?.suspend();
-    },
-    reset() { wasm.reset(); },
+    pause: stop,
+    reset() { if (!crashed) wasm.reset(); },
     setVolume(v) { if (gain) gain.gain.value = v; volume = v; },
     /** On-screen controls: press/release a named button. */
     press(name, down) {

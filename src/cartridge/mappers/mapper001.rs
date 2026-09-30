@@ -71,23 +71,25 @@ impl Mapper for Mapper001 {
             return MappedAddr::None;
         }
 
-        let last = (self.prg_banks - 1) as usize;
+        // 512 KB boards (SUROM) pick a 256 KB half with CHR bank 0 bit 4
+        let outer = if self.prg_banks > 16 { (self.chr_bank0 & 0x10) as usize } else { 0 };
+        let inner = (self.prg_bank & 0x0F) as usize;
         let bank = match self.prg_mode() {
             0 | 1 => {
                 // 32 KB mode, ignore low bit
-                let b = (self.prg_bank & 0xFE) as usize;
+                let b = inner & 0x0E;
                 if addr < 0xC000 { b } else { b + 1 }
             }
             2 => {
                 // Fix first bank at $8000, switch $C000
-                if addr < 0xC000 { 0 } else { self.prg_bank as usize }
+                if addr < 0xC000 { 0 } else { inner }
             }
-            3 => {
+            _ => {
                 // Switch $8000, fix last bank at $C000
-                if addr < 0xC000 { self.prg_bank as usize } else { last }
+                if addr < 0xC000 { inner } else { 0x0F }
             }
-            _ => unreachable!(),
         };
+        let bank = (outer | bank) % self.prg_banks.max(1) as usize;
 
         let offset = (addr & 0x3FFF) as usize;
         MappedAddr::PrgRom((bank * 0x4000) + offset)
@@ -110,15 +112,12 @@ impl Mapper for Mapper001 {
         }
         if self.chr_mode() == 0 {
             // 8 KB mode
-            let bank = (self.chr_bank0 & 0xFE) as usize;
-            (bank * 0x2000) + addr as usize
+            let bank = (self.chr_bank0 & 0xFE) as usize % (self.chr_banks as usize * 2);
+            (bank * 0x1000) + addr as usize
         } else {
             // 4 KB mode
-            if addr < 0x1000 {
-                (self.chr_bank0 as usize * 0x1000) + addr as usize
-            } else {
-                (self.chr_bank1 as usize * 0x1000) + (addr & 0x0FFF) as usize
-            }
+            let bank = if addr < 0x1000 { self.chr_bank0 } else { self.chr_bank1 };
+            (bank as usize % (self.chr_banks as usize * 2)) * 0x1000 + (addr & 0x0FFF) as usize
         }
     }
 

@@ -14,7 +14,7 @@ pub enum Mirroring {
 #[derive(Debug)]
 pub enum CartridgeError {
     InvalidHeader,
-    UnsupportedMapper(u8),
+    UnsupportedMapper(u16),
     TooShort,
 }
 
@@ -57,6 +57,9 @@ impl Cartridge {
         }
 
         let prg_banks = data[4] as usize;
+        if prg_banks == 0 {
+            return Err(CartridgeError::InvalidHeader);
+        }
         let chr_banks = data[5] as usize;
         let flags6 = data[6];
         let flags7 = data[7];
@@ -71,7 +74,15 @@ impl Cartridge {
 
         let has_battery = flags6 & 0x02 != 0;
         let has_trainer = flags6 & 0x04 != 0;
-        let mapper_id = (flags7 & 0xF0) | (flags6 >> 4);
+        let nes2 = flags7 & 0x0C == 0x08;
+        // Old dumps often have junk ("DiskDude!") in bytes 7-15; if the
+        // unused tail isn't zero, flags 7 can't be trusted for the mapper.
+        let mapper_hi = if nes2 || data[12..16].iter().all(|&b| b == 0) { flags7 & 0xF0 } else { 0 };
+        let mapper_id = mapper_hi | (flags6 >> 4);
+        // NES 2.0 mapper numbers above 255
+        if nes2 && data[8] & 0x0F != 0 {
+            return Err(CartridgeError::UnsupportedMapper(((data[8] as u16 & 0x0F) << 8) | mapper_id as u16));
+        }
 
         let trainer_offset = if has_trainer { 512 } else { 0 };
         let prg_start = 16 + trainer_offset;
@@ -95,7 +106,7 @@ impl Cartridge {
             3 => Mapper003::new(prg_banks as u8, chr_banks as u8, mirroring).into(),
             4 => Mapper004::new(prg_banks as u8, chr_banks as u8, mirroring).into(),
             7 => Mapper007::new(prg_banks as u8).into(),
-            _ => return Err(CartridgeError::UnsupportedMapper(mapper_id)),
+            _ => return Err(CartridgeError::UnsupportedMapper(mapper_id as u16)),
         };
 
         log::info!(

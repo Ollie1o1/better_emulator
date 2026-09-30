@@ -66,7 +66,7 @@ drag-and-drop ROM loading.
 | A | `Z` (desktop also `Alt`; browser also `K`) |
 | B | `X` (desktop also `Ctrl`; browser also `J`) |
 | Start | `Enter` or `Space` |
-| Select | `Shift` or `Tab` |
+| Select | `Shift` (desktop also `Tab`) |
 
 Desktop only: `F5` reset, `[` / `]` volume, `Escape` quit. Player 2 uses the
 numpad: `8` `5` `6` `9` for Up/Down/Left/Right, `1` A, `2` B, `3` Select, `4` Start.
