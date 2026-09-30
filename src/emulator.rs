@@ -8,114 +8,67 @@ pub struct Emulator {
     pub cpu: Cpu,
     pub bus: Bus,
     total_cycles: u64,
-    rom_path: String,
 }
 
 impl Emulator {
-    pub fn new(rom_data: &[u8], audio_sample_rate: u32, rom_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        let mut cartridge = Cartridge::from_ines(rom_data)?;
-
-        // Load battery-backed save RAM if it exists
-        if cartridge.has_battery {
-            let sav_path = sav_path_for(rom_path);
-            match std::fs::read(&sav_path) {
-                Ok(data) => {
-                    let len = data.len().min(cartridge.prg_ram.len());
-                    cartridge.prg_ram[..len].copy_from_slice(&data[..len]);
-                    log::info!("Loaded battery save from {}", sav_path);
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => log::warn!("Could not load battery save {}: {}", sav_path, e),
-            }
-        }
-
+    pub fn new(rom_data: &[u8], audio_sample_rate: u32) -> Result<Self, Box<dyn std::error::Error>> {
+        let cartridge = Cartridge::from_ines(rom_data)?;
         let mut bus = Bus::new(cartridge, audio_sample_rate);
         let mut cpu = Cpu::new();
         cpu.reset(&mut bus);
-        Ok(Self { cpu, bus, total_cycles: 0, rom_path: rom_path.to_string() })
+        Ok(Self { cpu, bus, total_cycles: 0 })
     }
 
-    /// Write battery-backed PRG RAM to a .sav file next to the ROM.
-    pub fn save_battery(&self) {
-        if !self.bus.cartridge.has_battery {
-            return;
-        }
-        let sav_path = sav_path_for(&self.rom_path);
-        match std::fs::write(&sav_path, &self.bus.cartridge.prg_ram) {
-            Ok(_) => log::info!("Saved battery RAM to {}", sav_path),
-            Err(e) => eprintln!("Failed to save battery RAM to {}: {}", sav_path, e),
-        }
+    /// Battery-backed PRG RAM (the cartridge's save data), if the cart has a battery.
+    /// Persisting it is the frontend's job (a `.sav` file, browser storage, ...).
+    pub fn battery_ram(&self) -> Option<&[u8]> {
+        self.bus.cartridge.has_battery.then(|| self.bus.cartridge.prg_ram.as_slice())
     }
 
-    /// Step the system by one CPU instruction.
+    /// Restore battery-backed PRG RAM saved by an earlier session.
+    pub fn load_battery_ram(&mut self, data: &[u8]) {
+        let ram = &mut self.bus.cartridge.prg_ram;
+        let len = data.len().min(ram.len());
+        ram[..len].copy_from_slice(&data[..len]);
+    }
+
+    /// Press the console's reset button.
+    pub fn reset(&mut self) {
+        self.cpu.reset(&mut self.bus);
+        self.bus.apu.cpu_write(0x4015, 0); // reset silences the APU
+    }
+
+    /// Total CPU cycles executed since power-on.
+    pub fn cycles(&self) -> u64 {
+        self.total_cycles
+    }
+
+    /// Step the system by one CPU instruction (or one OAM DMA transfer).
     /// Returns true when a new video frame is complete.
     pub fn clock(&mut self) -> bool {
-        let mut frame_done = false;
-
-        // Handle OAM DMA
-        if self.bus.dma_active {
-            if !self.bus.dma_sync {
-                if self.total_cycles % 2 == 1 {
-                    self.bus.dma_sync = true;
-                }
-            } else {
-                if self.total_cycles % 2 == 0 {
-                    self.bus.dma_data = self.bus.cpu_read(
-                        (self.bus.dma_page as u16) << 8 | self.bus.dma_addr as u16
-                    );
-                } else {
-                    self.bus.ppu.oam[self.bus.dma_addr as usize] = self.bus.dma_data;
-                    self.bus.dma_addr = self.bus.dma_addr.wrapping_add(1);
-                    if self.bus.dma_addr == 0 {
-                        self.bus.dma_active = false;
-                        self.bus.dma_sync = false;
-                    }
-                }
+        if let Some(page) = self.bus.dma_page.take() {
+            self.bus.run_oam_dma(page);
+        } else {
+            // Interrupts as polled before the previous instruction's last cycle.
+            if self.bus.nmi_polled {
+                self.bus.nmi_pending = false;
+                self.bus.nmi_polled = false;
+                self.cpu.nmi_pending = true;
             }
-            // Tick PPU 3x even during DMA
-            for _ in 0..3 {
-                if self.bus.ppu.tick(&mut self.bus.cartridge) {
-                    frame_done = true;
-                }
-                if self.bus.ppu.nmi_occurred {
-                    self.bus.ppu.nmi_occurred = false;
-                    self.cpu.nmi_pending = true;
-                }
-            }
-            self.bus.apu.tick();
-            self.total_cycles += 1;
-            return frame_done;
-        }
+            self.cpu.irq_pending = self.bus.irq_polled;
 
-        let cpu_cycles = self.cpu.step(&mut self.bus);
-
-        for _ in 0..cpu_cycles {
-            self.total_cycles += 1;
-
-            for _ in 0..3 {
-                if self.bus.ppu.tick(&mut self.bus.cartridge) {
-                    frame_done = true;
-                }
-                if self.bus.ppu.nmi_occurred {
-                    self.bus.ppu.nmi_occurred = false;
-                    self.cpu.nmi_pending = true;
-                }
-            }
-
-            self.bus.apu.tick();
-
-            if self.bus.cartridge.irq_active() {
-                self.bus.cartridge.irq_clear();
-                self.cpu.irq_pending = true;
-            }
-
-            if self.bus.apu.frame_irq {
-                self.bus.apu.frame_irq = false;
-                self.cpu.irq_pending = true;
+            // Memory accesses inside step() advance the PPU/APU as they happen;
+            // internal cycles with no bus access are made up afterwards.
+            let start = self.bus.cycles;
+            let cycles = self.cpu.step(&mut self.bus) as u64;
+            let used = self.bus.cycles - start;
+            for _ in used..cycles {
+                self.bus.tick();
             }
         }
+        self.total_cycles = self.bus.cycles;
 
-        frame_done
+        std::mem::take(&mut self.bus.frame_complete)
     }
 
     /// Run until one complete frame is produced.
@@ -123,14 +76,5 @@ impl Emulator {
         loop {
             if self.clock() { break; }
         }
-    }
-}
-
-fn sav_path_for(rom_path: &str) -> String {
-    // Replace .nes extension with .sav, or append .sav if no extension
-    if let Some(stem) = rom_path.strip_suffix(".nes") {
-        format!("{}.sav", stem)
-    } else {
-        format!("{}.sav", rom_path)
     }
 }

@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NES Emulator (Rust → WebAssembly)</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: dark; --bg: #0d0e12; --panel: #16181f; --ink: #e8e6e1; --dim: #8b8d96; --accent: #f2a93b; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 system-ui, sans-serif; display: grid; place-items: center; padding: 24px 16px; }
+  main { width: min(100%, 640px); }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p { color: var(--dim); margin: 0 0 16px; }
+  .screen { position: relative; background: #000; border-radius: 8px; overflow: hidden; outline: none;
+            aspect-ratio: 256 / 240; }
+  .screen:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+  canvas { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+  .overlay { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.55);
+             border: 0; color: var(--ink); font: 600 16px system-ui; cursor: pointer; width: 100%; }
+  .bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+  select, button, label.file { background: var(--panel); color: var(--ink); border: 1px solid #2a2d38;
+            border-radius: 6px; padding: 7px 12px; font: inherit; cursor: pointer; }
+  input[type=file] { display: none; }
+  .keys { font-size: 13px; color: var(--dim); margin-top: 12px; }
+  kbd { background: var(--panel); border: 1px solid #2a2d38; border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+  .touch { display: none; justify-content: space-between; margin-top: 14px; user-select: none; touch-action: none; }
+  @media (pointer: coarse) { .touch { display: flex; } }
+  .touch button { width: 56px; height: 56px; border-radius: 50%; padding: 0; font-weight: 700; }
+  .dpad { display: grid; grid-template-columns: repeat(3, 56px); grid-template-rows: repeat(3, 56px); }
+  .dpad button { border-radius: 8px; }
+  .mid { display: flex; gap: 8px; align-items: center; } .mid button { width: 64px; height: 32px; border-radius: 16px; font-size: 11px; }
+  .ab { display: flex; gap: 12px; align-items: center; }
+  .err { color: #ff7a6b; }
+</style>
+</head>
+<body>
+<main>
+  <h1>NES Emulator</h1>
+  <p>A Rust NES emulator compiled to WebAssembly, running in your browser.</p>
+
+  <div class="screen" data-nes-player tabindex="0">
+    <canvas id="screen"></canvas>
+    <button class="overlay" id="play">▶ Click to play</button>
+  </div>
+
+  <div class="bar">
+    <select id="rom" aria-label="Game">
+      <option value="roms/thwaite.nes">Thwaite — missile defense</option>
+      <option value="roms/nova.nes">Nova the Squirrel — platformer</option>
+      <option value="roms/croom.nes">Concentration Room — puzzle</option>
+    </select>
+    <button id="reset">Reset</button>
+    <label class="file">Load .nes…<input type="file" id="file" accept=".nes"></label>
+    <span id="status" class="err"></span>
+  </div>
+
+  <div class="keys">
+    <kbd>←↑↓→</kbd> / <kbd>WASD</kbd> D-pad · <kbd>Z</kbd> A · <kbd>X</kbd> B ·
+    <kbd>Enter</kbd> Start · <kbd>Shift</kbd> Select
+  </div>
+
+  <div class="touch" aria-hidden="true">
+    <div class="dpad">
+      <span></span><button data-btn="UP">▲</button><span></span>
+      <button data-btn="LEFT">◀</button><span></span><button data-btn="RIGHT">▶</button>
+      <span></span><button data-btn="DOWN">▼</button><span></span>
+    </div>
+    <div class="mid"><button data-btn="SELECT">SELECT</button><button data-btn="START">START</button></div>
+    <div class="ab"><button data-btn="B">B</button><button data-btn="A">A</button></div>
+  </div>
+</main>
+
+<script type="module">
+  import { createPlayer } from './nes-player.js';
+
+  const $ = (id) => document.getElementById(id);
+  const status = $('status');
+  const player = await createPlayer({ canvas: $('screen'), wasmUrl: 'nes_web.wasm' });
+
+  async function load(fn) {
+    status.textContent = '';
+    try { await fn(); } catch (e) { status.textContent = e.message; }
+  }
+
+  await load(() => player.loadRomUrl($('rom').value));
+
+  $('play').addEventListener('click', async () => {
+    await player.start();
+    $('play').remove();
+  });
+  $('rom').addEventListener('change', () => load(async () => {
+    await player.loadRomUrl($('rom').value);
+    await player.start();
+  }));
+  $('reset').addEventListener('click', () => player.reset());
+  $('file').addEventListener('change', (e) => load(async () => {
+    const f = e.target.files[0];
+    if (f) { await player.loadRomFile(f); await player.start(); $('play')?.remove(); }
+  }));
+
+  // Drag and drop a .nes onto the screen
+  const screen = document.querySelector('.screen');
+  screen.addEventListener('dragover', (e) => e.preventDefault());
+  screen.addEventListener('drop', (e) => load(async () => {
+    e.preventDefault();
+    const f = e.dataTransfer.files[0];
+    if (f) { await player.loadRomFile(f); await player.start(); $('play')?.remove(); }
+  }));
+
+  // Touch controls
+  for (const b of document.querySelectorAll('[data-btn]')) {
+    const name = b.dataset.btn;
+    b.addEventListener('pointerdown', (e) => { e.preventDefault(); player.press(name, true); });
+    for (const ev of ['pointerup', 'pointercancel', 'pointerleave'])
+      b.addEventListener(ev, () => player.press(name, false));
+  }
+</script>
+</body>
+</html>

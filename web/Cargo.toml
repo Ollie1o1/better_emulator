@@ -1,0 +1,18 @@
+[package]
+name = "nes_web"
+version = "0.2.0"
+edition = "2021"
+description = "WebAssembly build of the NES emulator core (raw C-ABI exports, no wasm-bindgen)"
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+nes_emulator = { path = "..", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

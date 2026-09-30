@@ -31,13 +31,19 @@ pub struct Ppu {
     // Data buffer for PPUDATA reads
     data_buf: u8,
 
+    // Open bus: the PPU's I/O latch holds the last value written or read on
+    // its CPU-facing data bus. Unrefreshed bits decay to 0 after ~600 ms.
+    io_latch: u8,
+    /// A $2002 read raced the VBL flag: don't set it (or fire NMI) this frame.
+    suppress_vbl: bool,
+    latch_refreshed_at: [u64; 8],  // frame number each bit was last driven
+
     // VRAM
     pub name_table: [[u8; 0x400]; 2],
     pub palette_ram: [u8; 32],
 
     // OAM
     pub oam: [u8; 256],
-    oam2: [u8; 32],
 
     // Background shift registers
     bg_pattern_lo: u16,
@@ -66,6 +72,8 @@ pub struct Ppu {
     pub scanline: i16,
     pub dot: u16,
     pub frame: u64,
+    /// PPU dots since power-on (timestamps for the mapper's A12 filter).
+    dots: u64,
 
     // NMI signals
     pub nmi_occurred: bool,
@@ -82,10 +90,12 @@ impl Ppu {
             ctrl: 0, mask: 0, status: 0, oam_addr: 0,
             v: 0, t: 0, x: 0, w: false,
             data_buf: 0,
+            io_latch: 0,
+            suppress_vbl: false,
+            latch_refreshed_at: [0; 8],
             name_table: [[0u8; 0x400]; 2],
             palette_ram: [0u8; 32],
             oam: [0u8; 256],
-            oam2: [0u8; 32],
             bg_pattern_lo: 0, bg_pattern_hi: 0,
             bg_attrib_lo: 0, bg_attrib_hi: 0,
             bg_at_latch_lo: false, bg_at_latch_hi: false,
@@ -94,7 +104,7 @@ impl Ppu {
             sprite_patterns_lo: [0; 8], sprite_patterns_hi: [0; 8],
             sprite_attribs: [0; 8], sprite_x: [0; 8],
             sprite_zero_hit_possible: false, sprite_zero_being_rendered: false,
-            scanline: 0, dot: 0, frame: 0,
+            scanline: 0, dot: 0, frame: 0, dots: 0,
             nmi_occurred: false, nmi_output: false, nmi_prev: false,
             frame_buffer: Box::new([0u8; SCREEN_WIDTH * SCREEN_HEIGHT * 4]),
         }
@@ -114,30 +124,85 @@ impl Ppu {
 
     // ---- CPU register access ----
 
+    /// Open-bus latch value with decayed bits cleared (~36 frames ≈ 600 ms).
+    fn latch(&mut self) -> u8 {
+        const DECAY_FRAMES: u64 = 36;
+        for bit in 0..8 {
+            if self.frame.saturating_sub(self.latch_refreshed_at[bit]) > DECAY_FRAMES {
+                self.io_latch &= !(1 << bit);
+            }
+        }
+        self.io_latch
+    }
+
+    /// Drive `mask` bits of the latch with `val`, refreshing their decay timers.
+    fn drive_latch(&mut self, val: u8, mask: u8) {
+        self.io_latch = (self.io_latch & !mask) | (val & mask);
+        for bit in 0..8 {
+            if mask & (1 << bit) != 0 {
+                self.latch_refreshed_at[bit] = self.frame;
+            }
+        }
+    }
+
     pub fn cpu_read(&mut self, reg: u16, cart: &mut Cartridge) -> u8 {
         match reg {
             0x0002 => {
-                let val = (self.status & 0xE0) | (self.data_buf & 0x1F);
+                // Race with VBL: a read on the dot before the flag is set sees
+                // it clear and stops it being set; reads on the dot it is set
+                // (or the next) see it set but still cancel that frame's NMI.
+                if self.scanline == 241 && self.dot == 1 {
+                    self.suppress_vbl = true;
+                }
+                let val = (self.status & 0xE0) | (self.latch() & 0x1F);
+                if self.scanline == 241 && (self.dot == 2 || self.dot == 3) {
+                    self.nmi_occurred = false;
+                    self.nmi_prev = true; // swallow this edge
+                }
+                self.drive_latch(val, 0xE0);
                 self.status &= !0x80; // clear vblank
                 self.w = false;
                 self.update_nmi();
                 val
             }
-            0x0004 => self.oam[self.oam_addr as usize],
-            0x0007 => {
-                let mut val = self.data_buf;
-                self.data_buf = self.ppu_read(self.v, cart);
-                if self.v >= 0x3F00 {
-                    val = self.data_buf;
-                }
-                self.increment_v();
+            0x0004 => {
+                let val = self.oam[self.oam_addr as usize];
+                self.drive_latch(val, 0xFF);
                 val
             }
-            _ => 0,
+            0x0007 => {
+                let val = if (self.v & 0x3FFF) >= 0x3F00 {
+                    // Palette reads come straight back (6 bits, high 2 from open
+                    // bus); the buffer is filled from the nametable "underneath".
+                    let pal = self.ppu_read(self.v, cart);
+                    self.data_buf = self.ppu_read(self.v.wrapping_sub(0x1000), cart);
+                    let v = (self.latch() & 0xC0) | (pal & 0x3F);
+                    self.drive_latch(v, 0x3F);
+                    v
+                } else {
+                    let v = self.data_buf;
+                    self.data_buf = self.ppu_read(self.v, cart);
+                    self.drive_latch(v, 0xFF);
+                    v
+                };
+                self.increment_v();
+                cart.ppu_bus_address(self.v, self.dots);
+                val
+            }
+            // Write-only registers read back the open-bus latch
+            _ => self.latch(),
         }
     }
 
+    /// One byte of OAM DMA from $4014.
+    pub fn oam_dma_write(&mut self, val: u8) {
+        let val = if self.oam_addr & 3 == 2 { val & 0xE3 } else { val };
+        self.oam[self.oam_addr as usize] = val;
+        self.oam_addr = self.oam_addr.wrapping_add(1);
+    }
+
     pub fn cpu_write(&mut self, reg: u16, val: u8, cart: &mut Cartridge) {
+        self.drive_latch(val, 0xFF);
         match reg {
             0x0000 => {
                 self.ctrl = val;
@@ -149,6 +214,8 @@ impl Ppu {
             0x0001 => { self.mask = val; }
             0x0003 => { self.oam_addr = val; }
             0x0004 => {
+                // Sprite attribute bytes have no bits 2-4
+                let val = if self.oam_addr & 3 == 2 { val & 0xE3 } else { val };
                 self.oam[self.oam_addr as usize] = val;
                 self.oam_addr = self.oam_addr.wrapping_add(1);
             }
@@ -172,12 +239,15 @@ impl Ppu {
                 } else {
                     self.t = (self.t & 0xFF00) | val as u16;
                     self.v = self.t;
+                    // The new address goes out on the PPU bus (MMC3 sees A12)
+                    cart.ppu_bus_address(self.v, self.dots);
                 }
                 self.w = !self.w;
             }
             0x0007 => {
                 self.ppu_write(self.v, val, cart);
                 self.increment_v();
+                cart.ppu_bus_address(self.v, self.dots);
             }
             _ => {}
         }
@@ -201,8 +271,9 @@ impl Ppu {
 
     // ---- PPU internal memory access ----
 
-    fn ppu_read(&self, addr: u16, cart: &Cartridge) -> u8 {
+    fn ppu_read(&self, addr: u16, cart: &mut Cartridge) -> u8 {
         let addr = addr & 0x3FFF;
+        cart.ppu_bus_address(addr, self.dots);
         match addr {
             0x0000..=0x1FFF => cart.ppu_read(addr),
             0x2000..=0x3EFF => {
@@ -221,6 +292,7 @@ impl Ppu {
 
     fn ppu_write(&mut self, addr: u16, val: u8, cart: &mut Cartridge) {
         let addr = addr & 0x3FFF;
+        cart.ppu_bus_address(addr, self.dots);
         match addr {
             0x0000..=0x1FFF => cart.ppu_write(addr, val),
             0x2000..=0x3EFF => {
@@ -252,6 +324,7 @@ impl Ppu {
     /// Advance PPU by 1 dot. Returns true when a frame is complete.
     pub fn tick(&mut self, cart: &mut Cartridge) -> bool {
         let mut frame_done = false;
+        self.dots += 1;
 
         match self.scanline {
             -1 | 261 => self.tick_prerender(cart),
@@ -259,8 +332,11 @@ impl Ppu {
             240      => {} // post-render idle
             241      => {
                 if self.dot == 1 {
-                    self.status |= 0x80; // set vblank
-                    self.update_nmi();
+                    if !self.suppress_vbl {
+                        self.status |= 0x80; // set vblank
+                        self.update_nmi();
+                    }
+                    self.suppress_vbl = false;
                 }
             }
             _ => {}
@@ -291,6 +367,11 @@ impl Ppu {
             self.status &= !0xE0; // clear vblank, sprite-zero-hit, overflow
             self.update_nmi();    // falling edge: reset nmi_prev so next vblank re-triggers NMI
         }
+        if self.dot == 257 {
+            // No sprite evaluation happens on the pre-render line, so nothing
+            // is drawn on scanline 0 (don't leak line 239's sprites onto it).
+            self.sprite_count = 0;
+        }
         if self.rendering_enabled() {
             if self.dot >= 1 && self.dot <= 256 || self.dot >= 321 && self.dot <= 336 {
                 self.fetch_bg_tile(cart);
@@ -302,6 +383,9 @@ impl Ppu {
             // Copy horizontal bits from t to v on dot 257
             if self.dot == 257 {
                 self.copy_horiz();
+            }
+            if self.dot == 260 {
+                self.fetch_unused_sprite_slots(0, cart);
             }
             // Copy vertical bits from t to v on dots 280-304
             if self.dot >= 280 && self.dot <= 304 {
@@ -319,13 +403,25 @@ impl Ppu {
             // Idle
             return;
         }
-        if self.rendering_enabled() {
+        if !self.rendering_enabled() {
+            // Rendering off: the screen shows the backdrop colour (or the
+            // palette entry v points at, if v is inside palette space).
+            if self.dot <= 256 {
+                let idx = if self.v & 0x3F00 == 0x3F00 { (self.v & 0x1F) as usize } else { 0 };
+                self.put_pixel((self.dot - 1) as usize, self.scanline as usize, self.palette_ram[idx]);
+            }
+            return;
+        }
+        {
             if self.dot <= 256 {
                 self.fetch_bg_tile(cart);
                 self.render_pixel(cart);
                 self.shift_bg();
             } else if self.dot == 257 {
                 self.copy_horiz();
+            } else if self.dot == 260 {
+                // Sprite pattern fetches begin here (dots 257-260 fetch garbage
+                // nametable/attribute bytes); this is when MMC3 sees A12 rise.
                 self.load_sprites(cart);
             } else if self.dot >= 321 && self.dot <= 336 {
                 self.fetch_bg_tile(cart);
@@ -459,14 +555,38 @@ impl Ppu {
             (bg_palette, bg_pixel)
         };
 
-        let color_idx = self.palette_ram[((palette << 2) | pixel) as usize & 0x1F] as usize & 0x3F;
-        let (r, g, b) = PALETTE[color_idx];
+        let mut pal_addr = ((palette << 2) | pixel) as usize & 0x1F;
+        if pal_addr & 0x13 == 0x10 { pal_addr &= !0x10; } // sprite backdrop mirrors
+        if pixel == 0 { pal_addr = 0; }                    // transparent → universal backdrop
+        self.put_pixel(x, y, self.palette_ram[pal_addr]);
+    }
 
+    /// Write one palette entry (NES colour index) to the ARGB frame buffer,
+    /// applying the $2001 greyscale bit.
+    fn put_pixel(&mut self, x: usize, y: usize, color: u8) {
+        let mut idx = (color & 0x3F) as usize;
+        if self.mask & 0x01 != 0 { idx &= 0x30; }
+        let (r, g, b) = PALETTE[idx];
         let off = (y * SCREEN_WIDTH + x) * 4;
         self.frame_buffer[off]     = b;
         self.frame_buffer[off + 1] = g;
         self.frame_buffer[off + 2] = r;
         self.frame_buffer[off + 3] = 0xFF;
+    }
+
+    /// Hardware always performs 8 sprite pattern fetches per line; unused
+    /// slots fetch tile $FF. MMC3's scanline counter depends on these.
+    fn fetch_unused_sprite_slots(&mut self, used: u8, cart: &mut Cartridge) {
+        let addr = if self.ctrl & 0x20 != 0 {
+            0x1000 | (0xFEu16 << 4) // 8x16: tile $FF → right table
+        } else {
+            let bank = if self.ctrl & 0x08 != 0 { 0x1000u16 } else { 0 };
+            bank | (0xFFu16 << 4)
+        };
+        for _ in used..8 {
+            self.ppu_read(addr, cart);
+            self.ppu_read(addr + 8, cart);
+        }
     }
 
     fn load_sprites(&mut self, cart: &mut Cartridge) {
@@ -533,6 +653,7 @@ impl Ppu {
 
             count += 1;
         }
+        self.fetch_unused_sprite_slots(count, cart);
         self.sprite_count = count;
     }
 

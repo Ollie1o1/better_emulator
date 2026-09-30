@@ -21,13 +21,14 @@ pub struct Apu {
     pub noise: Noise,
     pub dmc: Dmc,
 
-    frame_counter: u16,
+    frame_counter: u32,
     frame_mode: bool,   // false=4-step, true=5-step
     irq_inhibit: bool,
     pub frame_irq: bool,
+    /// A $4017 write takes effect 3-4 CPU cycles later: (cycles left, value).
+    pending_4017: Option<(u8, u8)>,
 
     sample_buffer: Vec<f32>,
-    sample_rate: u32,
     cycle: u64,
     sample_timer: f64,
     samples_per_cpu_cycle: f64,
@@ -46,8 +47,8 @@ impl Apu {
             frame_mode: false,
             irq_inhibit: false,
             frame_irq: false,
+            pending_4017: None,
             sample_buffer: Vec::with_capacity(2048),
-            sample_rate,
             cycle: 0,
             sample_timer: 0.0,
             samples_per_cpu_cycle: sample_rate as f64 / cpu_clock,
@@ -57,38 +58,32 @@ impl Apu {
     pub fn tick(&mut self) {
         self.cycle += 1;
 
-        // Clock frame counter every ~3728.5 CPU cycles (half-frame = 7457 cycles)
-        // Simplified: tick frame sequencer every CPU cycle
+        // ── Frame sequencer (NTSC step timings, in CPU cycles) ──
+        if let Some((left, val)) = self.pending_4017 {
+            if left <= 1 {
+                self.pending_4017 = None;
+                self.frame_counter = 0;
+                if val & 0x80 != 0 {
+                    // 5-step mode clocks quarter + half frame immediately
+                    self.clock_quarter_frame();
+                    self.clock_half_frame();
+                }
+            } else {
+                self.pending_4017 = Some((left - 1, val));
+            }
+        }
+
         self.frame_counter += 1;
-        let step_len: u16 = 7457;
-
-        let step = (self.frame_counter / step_len) as u8;
-        let steps = if self.frame_mode { 5 } else { 4 };
-
-        if self.frame_counter >= step_len * steps as u16 {
-            self.frame_counter = 0;
-        }
-
-        // Clock envelopes and triangle linear counter on every quarter-frame
-        if self.frame_counter % step_len == 0 {
-            self.pulse1.clock_envelope();
-            self.pulse2.clock_envelope();
-            self.triangle.clock_linear();
-            self.noise.clock_envelope();
-        }
-
-        // Clock length counters and sweep on every half-frame (steps 2 and 4/5)
-        let is_half = (step == 1) || (step == 3 && !self.frame_mode) || (step == 4 && self.frame_mode);
-        if is_half && self.frame_counter % step_len == 0 {
-            self.pulse1.clock_length_sweep();
-            self.pulse2.clock_length_sweep();
-            self.triangle.clock_length();
-            self.noise.clock_length();
-        }
-
-        // IRQ (4-step mode only, step 4)
-        if !self.frame_mode && !self.irq_inhibit && step == 3 {
-            self.frame_irq = true;
+        match (self.frame_mode, self.frame_counter) {
+            (_, 7457)  => self.clock_quarter_frame(),
+            (_, 14913) => { self.clock_quarter_frame(); self.clock_half_frame(); }
+            (_, 22371) => self.clock_quarter_frame(),
+            (false, 29828) => self.set_frame_irq(),
+            (false, 29829) => { self.clock_quarter_frame(); self.clock_half_frame(); self.set_frame_irq(); }
+            (false, 29830) => { self.set_frame_irq(); self.frame_counter = 0; }
+            (true, 37281)  => { self.clock_quarter_frame(); self.clock_half_frame(); }
+            (true, 37282)  => self.frame_counter = 0,
+            _ => {}
         }
 
         // Clock timers every CPU cycle (pulse timers every 2 cycles)
@@ -108,7 +103,31 @@ impl Apu {
         }
     }
 
-    pub fn cpu_read(&self, addr: u16) -> u8 {
+    fn clock_quarter_frame(&mut self) {
+        self.pulse1.clock_envelope();
+        self.pulse2.clock_envelope();
+        self.triangle.clock_linear();
+        self.noise.clock_envelope();
+    }
+
+    fn clock_half_frame(&mut self) {
+        self.pulse1.clock_length_sweep();
+        self.pulse2.clock_length_sweep();
+        self.triangle.clock_length();
+        self.noise.clock_length();
+    }
+
+    fn set_frame_irq(&mut self) {
+        if !self.irq_inhibit { self.frame_irq = true; }
+    }
+
+    /// Level of the APU's IRQ output (frame counter or DMC).
+    pub fn irq(&self) -> bool {
+        self.frame_irq || self.dmc.irq_flag
+    }
+
+    /// $4015 status read. Reading acknowledges the frame IRQ (not the DMC IRQ).
+    pub fn cpu_read(&mut self, addr: u16) -> u8 {
         match addr {
             0x4015 => {
                 let mut val = 0u8;
@@ -118,6 +137,8 @@ impl Apu {
                 if self.noise.length_counter > 0    { val |= 0x08; }
                 if self.dmc.bytes_remaining > 0      { val |= 0x10; }
                 if self.frame_irq                    { val |= 0x40; }
+                if self.dmc.irq_flag                 { val |= 0x80; }
+                self.frame_irq = false;
                 val
             }
             _ => 0,
@@ -150,23 +171,15 @@ impl Apu {
                 self.triangle.set_enabled(val & 0x04 != 0);
                 self.noise.set_enabled(val & 0x08 != 0);
                 self.dmc.set_enabled(val & 0x10 != 0);
-                self.frame_irq = false;
             }
             0x4017 => {
                 self.frame_mode = val & 0x80 != 0;
                 self.irq_inhibit = val & 0x40 != 0;
                 if self.irq_inhibit { self.frame_irq = false; }
-                self.frame_counter = 0;
-                if self.frame_mode {
-                    self.pulse1.clock_envelope();
-                    self.pulse2.clock_envelope();
-                    self.triangle.clock_linear();
-                    self.noise.clock_envelope();
-                    self.pulse1.clock_length_sweep();
-                    self.pulse2.clock_length_sweep();
-                    self.triangle.clock_length();
-                    self.noise.clock_length();
-                }
+                // Sequencer reset lands 3-4 CPU cycles after the write depending
+                // on APU cycle parity (counted here in ticks including this one)
+                let delay = if self.cycle % 2 == 0 { 4 } else { 5 };
+                self.pending_4017 = Some((delay, val));
             }
             _ => {}
         }

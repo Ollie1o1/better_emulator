@@ -1,4 +1,12 @@
 /target
-roms/*.nes
+/web/target
+/web/dist
 saves/*.sav
+roms/*.sav
+tests/roms/*.sav
 .claude/
+# Your own ROMs stay local; only the bundled open-source homebrew is tracked
+roms/*.nes
+!roms/thwaite.nes
+!roms/nova.nes
+!roms/croom.nes

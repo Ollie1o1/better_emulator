@@ -30,7 +30,14 @@ impl Controller {
         self.strobe = new_strobe;
     }
 
+    /// Serial read of $4016/$4017. Bits 5-7 aren't driven by the controller and
+    /// read back as open bus — the high byte of the address, $40 — which some
+    /// games rely on (they compare the whole byte against $41).
     pub fn read(&mut self) -> u8 {
+        0x40 | self.read_bit()
+    }
+
+    fn read_bit(&mut self) -> u8 {
         if self.strobe {
             // While strobe is high: continuously return current A button state.
             return (self.buttons & buttons::A != 0) as u8;

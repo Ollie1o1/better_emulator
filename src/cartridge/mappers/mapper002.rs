@@ -34,7 +34,7 @@ impl Mapper for Mapper002 {
 
     fn cpu_map_write(&mut self, addr: u16, val: u8) -> MappedAddr {
         if addr >= 0x8000 {
-            self.selected_bank = val & 0x0F;
+            self.selected_bank = val % self.prg_banks.max(1);
         } else if addr >= 0x6000 {
             return MappedAddr::PrgRam((addr & 0x1FFF) as usize);
         }

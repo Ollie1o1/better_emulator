@@ -58,7 +58,8 @@ impl Cpu {
             return 7;
         }
         if self.irq_pending && self.p & I == 0 {
-            self.irq_pending = false;
+            // Level-triggered: the source stays asserted until the game
+            // acknowledges it; the I flag set here stops re-entry.
             self.handle_irq(bus);
             return 7;
         }
@@ -91,12 +92,6 @@ impl Cpu {
         let val = bus.cpu_read(self.pc);
         self.pc = self.pc.wrapping_add(1);
         val
-    }
-
-    fn read16(&mut self, bus: &mut Bus, addr: u16) -> u16 {
-        let lo = bus.cpu_read(addr) as u16;
-        let hi = bus.cpu_read(addr.wrapping_add(1)) as u16;
-        (hi << 8) | lo
     }
 
     fn read16_zp(&mut self, bus: &mut Bus, addr: u8) -> u16 {
@@ -184,6 +179,46 @@ impl Cpu {
         (addr, crossed)
     }
 
+    /// Indexed read: on a page cross the 6502 first reads the address with the
+    /// high byte not yet carried, then the real one (one extra cycle).
+    fn addr_absx_rd(&mut self, bus: &mut Bus) -> (u16, bool) {
+        let (addr, crossed) = self.addr_absx(bus);
+        if crossed { bus.cpu_read(addr.wrapping_sub(0x100)); }
+        (addr, crossed)
+    }
+
+    fn addr_absy_rd(&mut self, bus: &mut Bus) -> (u16, bool) {
+        let (addr, crossed) = self.addr_absy(bus);
+        if crossed { bus.cpu_read(addr.wrapping_sub(0x100)); }
+        (addr, crossed)
+    }
+
+    fn addr_indy_rd(&mut self, bus: &mut Bus) -> (u16, bool) {
+        let (addr, crossed) = self.addr_indy(bus);
+        if crossed { bus.cpu_read(addr.wrapping_sub(0x100)); }
+        (addr, crossed)
+    }
+
+    /// Indexed write / read-modify-write: the dummy read always happens,
+    /// crossed or not, and the cycle count is fixed.
+    fn addr_absx_wr(&mut self, bus: &mut Bus) -> u16 {
+        let (addr, crossed) = self.addr_absx(bus);
+        bus.cpu_read(if crossed { addr.wrapping_sub(0x100) } else { addr });
+        addr
+    }
+
+    fn addr_absy_wr(&mut self, bus: &mut Bus) -> u16 {
+        let (addr, crossed) = self.addr_absy(bus);
+        bus.cpu_read(if crossed { addr.wrapping_sub(0x100) } else { addr });
+        addr
+    }
+
+    fn addr_indy_wr(&mut self, bus: &mut Bus) -> u16 {
+        let (addr, crossed) = self.addr_indy(bus);
+        bus.cpu_read(if crossed { addr.wrapping_sub(0x100) } else { addr });
+        addr
+    }
+
     fn addr_indx(&mut self, bus: &mut Bus) -> (u16, bool) {
         let zp = self.read_pc(bus).wrapping_add(self.x);
         let addr = self.read16_zp(bus, zp);
@@ -249,33 +284,33 @@ impl Cpu {
             0xA5 => { let (a,_)=self.addr_zpg(bus); self.a=bus.cpu_read(a); self.set_zn(self.a); 3 }
             0xB5 => { let (a,_)=self.addr_zpgx(bus); self.a=bus.cpu_read(a); self.set_zn(self.a); 4 }
             0xAD => { let (a,_)=self.addr_abs(bus); self.a=bus.cpu_read(a); self.set_zn(self.a); 4 }
-            0xBD => { let (a,c)=self.addr_absx(bus); self.a=bus.cpu_read(a); self.set_zn(self.a); 4+c as u8 }
-            0xB9 => { let (a,c)=self.addr_absy(bus); self.a=bus.cpu_read(a); self.set_zn(self.a); 4+c as u8 }
+            0xBD => { let (a,c)=self.addr_absx_rd(bus); self.a=bus.cpu_read(a); self.set_zn(self.a); 4+c as u8 }
+            0xB9 => { let (a,c)=self.addr_absy_rd(bus); self.a=bus.cpu_read(a); self.set_zn(self.a); 4+c as u8 }
             0xA1 => { let (a,_)=self.addr_indx(bus); self.a=bus.cpu_read(a); self.set_zn(self.a); 6 }
-            0xB1 => { let (a,c)=self.addr_indy(bus); self.a=bus.cpu_read(a); self.set_zn(self.a); 5+c as u8 }
+            0xB1 => { let (a,c)=self.addr_indy_rd(bus); self.a=bus.cpu_read(a); self.set_zn(self.a); 5+c as u8 }
 
             // ---- LDX ----
             0xA2 => { let (a,_)=self.addr_imm(bus); self.x=bus.cpu_read(a); self.set_zn(self.x); 2 }
             0xA6 => { let (a,_)=self.addr_zpg(bus); self.x=bus.cpu_read(a); self.set_zn(self.x); 3 }
             0xB6 => { let (a,_)=self.addr_zpgy(bus); self.x=bus.cpu_read(a); self.set_zn(self.x); 4 }
             0xAE => { let (a,_)=self.addr_abs(bus); self.x=bus.cpu_read(a); self.set_zn(self.x); 4 }
-            0xBE => { let (a,c)=self.addr_absy(bus); self.x=bus.cpu_read(a); self.set_zn(self.x); 4+c as u8 }
+            0xBE => { let (a,c)=self.addr_absy_rd(bus); self.x=bus.cpu_read(a); self.set_zn(self.x); 4+c as u8 }
 
             // ---- LDY ----
             0xA0 => { let (a,_)=self.addr_imm(bus); self.y=bus.cpu_read(a); self.set_zn(self.y); 2 }
             0xA4 => { let (a,_)=self.addr_zpg(bus); self.y=bus.cpu_read(a); self.set_zn(self.y); 3 }
             0xB4 => { let (a,_)=self.addr_zpgx(bus); self.y=bus.cpu_read(a); self.set_zn(self.y); 4 }
             0xAC => { let (a,_)=self.addr_abs(bus); self.y=bus.cpu_read(a); self.set_zn(self.y); 4 }
-            0xBC => { let (a,c)=self.addr_absx(bus); self.y=bus.cpu_read(a); self.set_zn(self.y); 4+c as u8 }
+            0xBC => { let (a,c)=self.addr_absx_rd(bus); self.y=bus.cpu_read(a); self.set_zn(self.y); 4+c as u8 }
 
             // ---- STA ----
             0x85 => { let (a,_)=self.addr_zpg(bus); bus.cpu_write(a, self.a); 3 }
             0x95 => { let (a,_)=self.addr_zpgx(bus); bus.cpu_write(a, self.a); 4 }
             0x8D => { let (a,_)=self.addr_abs(bus); bus.cpu_write(a, self.a); 4 }
-            0x9D => { let (a,_)=self.addr_absx(bus); bus.cpu_write(a, self.a); 5 }
-            0x99 => { let (a,_)=self.addr_absy(bus); bus.cpu_write(a, self.a); 5 }
+            0x9D => { let a=self.addr_absx_wr(bus); bus.cpu_write(a, self.a); 5 }
+            0x99 => { let a=self.addr_absy_wr(bus); bus.cpu_write(a, self.a); 5 }
             0x81 => { let (a,_)=self.addr_indx(bus); bus.cpu_write(a, self.a); 6 }
-            0x91 => { let (a,_)=self.addr_indy(bus); bus.cpu_write(a, self.a); 6 }
+            0x91 => { let a=self.addr_indy_wr(bus); bus.cpu_write(a, self.a); 6 }
 
             // ---- STX ----
             0x86 => { let (a,_)=self.addr_zpg(bus); bus.cpu_write(a, self.x); 3 }
@@ -306,60 +341,60 @@ impl Cpu {
             0x65 => { let (a,_)=self.addr_zpg(bus); let v=bus.cpu_read(a); self.adc_impl(v); 3 }
             0x75 => { let (a,_)=self.addr_zpgx(bus); let v=bus.cpu_read(a); self.adc_impl(v); 4 }
             0x6D => { let (a,_)=self.addr_abs(bus); let v=bus.cpu_read(a); self.adc_impl(v); 4 }
-            0x7D => { let (a,c)=self.addr_absx(bus); let v=bus.cpu_read(a); self.adc_impl(v); 4+c as u8 }
-            0x79 => { let (a,c)=self.addr_absy(bus); let v=bus.cpu_read(a); self.adc_impl(v); 4+c as u8 }
+            0x7D => { let (a,c)=self.addr_absx_rd(bus); let v=bus.cpu_read(a); self.adc_impl(v); 4+c as u8 }
+            0x79 => { let (a,c)=self.addr_absy_rd(bus); let v=bus.cpu_read(a); self.adc_impl(v); 4+c as u8 }
             0x61 => { let (a,_)=self.addr_indx(bus); let v=bus.cpu_read(a); self.adc_impl(v); 6 }
-            0x71 => { let (a,c)=self.addr_indy(bus); let v=bus.cpu_read(a); self.adc_impl(v); 5+c as u8 }
+            0x71 => { let (a,c)=self.addr_indy_rd(bus); let v=bus.cpu_read(a); self.adc_impl(v); 5+c as u8 }
 
             // ---- SBC ----
             0xE9 => { let (a,_)=self.addr_imm(bus); let v=bus.cpu_read(a); self.adc_impl(v^0xFF); 2 }
             0xE5 => { let (a,_)=self.addr_zpg(bus); let v=bus.cpu_read(a); self.adc_impl(v^0xFF); 3 }
             0xF5 => { let (a,_)=self.addr_zpgx(bus); let v=bus.cpu_read(a); self.adc_impl(v^0xFF); 4 }
             0xED => { let (a,_)=self.addr_abs(bus); let v=bus.cpu_read(a); self.adc_impl(v^0xFF); 4 }
-            0xFD => { let (a,c)=self.addr_absx(bus); let v=bus.cpu_read(a); self.adc_impl(v^0xFF); 4+c as u8 }
-            0xF9 => { let (a,c)=self.addr_absy(bus); let v=bus.cpu_read(a); self.adc_impl(v^0xFF); 4+c as u8 }
+            0xFD => { let (a,c)=self.addr_absx_rd(bus); let v=bus.cpu_read(a); self.adc_impl(v^0xFF); 4+c as u8 }
+            0xF9 => { let (a,c)=self.addr_absy_rd(bus); let v=bus.cpu_read(a); self.adc_impl(v^0xFF); 4+c as u8 }
             0xE1 => { let (a,_)=self.addr_indx(bus); let v=bus.cpu_read(a); self.adc_impl(v^0xFF); 6 }
-            0xF1 => { let (a,c)=self.addr_indy(bus); let v=bus.cpu_read(a); self.adc_impl(v^0xFF); 5+c as u8 }
+            0xF1 => { let (a,c)=self.addr_indy_rd(bus); let v=bus.cpu_read(a); self.adc_impl(v^0xFF); 5+c as u8 }
 
             // ---- AND ----
             0x29 => { let (a,_)=self.addr_imm(bus); self.a&=bus.cpu_read(a); self.set_zn(self.a); 2 }
             0x25 => { let (a,_)=self.addr_zpg(bus); self.a&=bus.cpu_read(a); self.set_zn(self.a); 3 }
             0x35 => { let (a,_)=self.addr_zpgx(bus); self.a&=bus.cpu_read(a); self.set_zn(self.a); 4 }
             0x2D => { let (a,_)=self.addr_abs(bus); self.a&=bus.cpu_read(a); self.set_zn(self.a); 4 }
-            0x3D => { let (a,c)=self.addr_absx(bus); self.a&=bus.cpu_read(a); self.set_zn(self.a); 4+c as u8 }
-            0x39 => { let (a,c)=self.addr_absy(bus); self.a&=bus.cpu_read(a); self.set_zn(self.a); 4+c as u8 }
+            0x3D => { let (a,c)=self.addr_absx_rd(bus); self.a&=bus.cpu_read(a); self.set_zn(self.a); 4+c as u8 }
+            0x39 => { let (a,c)=self.addr_absy_rd(bus); self.a&=bus.cpu_read(a); self.set_zn(self.a); 4+c as u8 }
             0x21 => { let (a,_)=self.addr_indx(bus); self.a&=bus.cpu_read(a); self.set_zn(self.a); 6 }
-            0x31 => { let (a,c)=self.addr_indy(bus); self.a&=bus.cpu_read(a); self.set_zn(self.a); 5+c as u8 }
+            0x31 => { let (a,c)=self.addr_indy_rd(bus); self.a&=bus.cpu_read(a); self.set_zn(self.a); 5+c as u8 }
 
             // ---- EOR ----
             0x49 => { let (a,_)=self.addr_imm(bus); self.a^=bus.cpu_read(a); self.set_zn(self.a); 2 }
             0x45 => { let (a,_)=self.addr_zpg(bus); self.a^=bus.cpu_read(a); self.set_zn(self.a); 3 }
             0x55 => { let (a,_)=self.addr_zpgx(bus); self.a^=bus.cpu_read(a); self.set_zn(self.a); 4 }
             0x4D => { let (a,_)=self.addr_abs(bus); self.a^=bus.cpu_read(a); self.set_zn(self.a); 4 }
-            0x5D => { let (a,c)=self.addr_absx(bus); self.a^=bus.cpu_read(a); self.set_zn(self.a); 4+c as u8 }
-            0x59 => { let (a,c)=self.addr_absy(bus); self.a^=bus.cpu_read(a); self.set_zn(self.a); 4+c as u8 }
+            0x5D => { let (a,c)=self.addr_absx_rd(bus); self.a^=bus.cpu_read(a); self.set_zn(self.a); 4+c as u8 }
+            0x59 => { let (a,c)=self.addr_absy_rd(bus); self.a^=bus.cpu_read(a); self.set_zn(self.a); 4+c as u8 }
             0x41 => { let (a,_)=self.addr_indx(bus); self.a^=bus.cpu_read(a); self.set_zn(self.a); 6 }
-            0x51 => { let (a,c)=self.addr_indy(bus); self.a^=bus.cpu_read(a); self.set_zn(self.a); 5+c as u8 }
+            0x51 => { let (a,c)=self.addr_indy_rd(bus); self.a^=bus.cpu_read(a); self.set_zn(self.a); 5+c as u8 }
 
             // ---- ORA ----
             0x09 => { let (a,_)=self.addr_imm(bus); self.a|=bus.cpu_read(a); self.set_zn(self.a); 2 }
             0x05 => { let (a,_)=self.addr_zpg(bus); self.a|=bus.cpu_read(a); self.set_zn(self.a); 3 }
             0x15 => { let (a,_)=self.addr_zpgx(bus); self.a|=bus.cpu_read(a); self.set_zn(self.a); 4 }
             0x0D => { let (a,_)=self.addr_abs(bus); self.a|=bus.cpu_read(a); self.set_zn(self.a); 4 }
-            0x1D => { let (a,c)=self.addr_absx(bus); self.a|=bus.cpu_read(a); self.set_zn(self.a); 4+c as u8 }
-            0x19 => { let (a,c)=self.addr_absy(bus); self.a|=bus.cpu_read(a); self.set_zn(self.a); 4+c as u8 }
+            0x1D => { let (a,c)=self.addr_absx_rd(bus); self.a|=bus.cpu_read(a); self.set_zn(self.a); 4+c as u8 }
+            0x19 => { let (a,c)=self.addr_absy_rd(bus); self.a|=bus.cpu_read(a); self.set_zn(self.a); 4+c as u8 }
             0x01 => { let (a,_)=self.addr_indx(bus); self.a|=bus.cpu_read(a); self.set_zn(self.a); 6 }
-            0x11 => { let (a,c)=self.addr_indy(bus); self.a|=bus.cpu_read(a); self.set_zn(self.a); 5+c as u8 }
+            0x11 => { let (a,c)=self.addr_indy_rd(bus); self.a|=bus.cpu_read(a); self.set_zn(self.a); 5+c as u8 }
 
             // ---- CMP ----
             0xC9 => { let (a,_)=self.addr_imm(bus); let v=bus.cpu_read(a); self.cmp(self.a,v); 2 }
             0xC5 => { let (a,_)=self.addr_zpg(bus); let v=bus.cpu_read(a); self.cmp(self.a,v); 3 }
             0xD5 => { let (a,_)=self.addr_zpgx(bus); let v=bus.cpu_read(a); self.cmp(self.a,v); 4 }
             0xCD => { let (a,_)=self.addr_abs(bus); let v=bus.cpu_read(a); self.cmp(self.a,v); 4 }
-            0xDD => { let (a,c)=self.addr_absx(bus); let v=bus.cpu_read(a); self.cmp(self.a,v); 4+c as u8 }
-            0xD9 => { let (a,c)=self.addr_absy(bus); let v=bus.cpu_read(a); self.cmp(self.a,v); 4+c as u8 }
+            0xDD => { let (a,c)=self.addr_absx_rd(bus); let v=bus.cpu_read(a); self.cmp(self.a,v); 4+c as u8 }
+            0xD9 => { let (a,c)=self.addr_absy_rd(bus); let v=bus.cpu_read(a); self.cmp(self.a,v); 4+c as u8 }
             0xC1 => { let (a,_)=self.addr_indx(bus); let v=bus.cpu_read(a); self.cmp(self.a,v); 6 }
-            0xD1 => { let (a,c)=self.addr_indy(bus); let v=bus.cpu_read(a); self.cmp(self.a,v); 5+c as u8 }
+            0xD1 => { let (a,c)=self.addr_indy_rd(bus); let v=bus.cpu_read(a); self.cmp(self.a,v); 5+c as u8 }
 
             // ---- CPX ----
             0xE0 => { let (a,_)=self.addr_imm(bus); let v=bus.cpu_read(a); self.cmp(self.x,v); 2 }
@@ -372,16 +407,16 @@ impl Cpu {
             0xCC => { let (a,_)=self.addr_abs(bus); let v=bus.cpu_read(a); self.cmp(self.y,v); 4 }
 
             // ---- INC ----
-            0xE6 => { let (a,_)=self.addr_zpg(bus); let v=bus.cpu_read(a).wrapping_add(1); bus.cpu_write(a,v); self.set_zn(v); 5 }
-            0xF6 => { let (a,_)=self.addr_zpgx(bus); let v=bus.cpu_read(a).wrapping_add(1); bus.cpu_write(a,v); self.set_zn(v); 6 }
-            0xEE => { let (a,_)=self.addr_abs(bus); let v=bus.cpu_read(a).wrapping_add(1); bus.cpu_write(a,v); self.set_zn(v); 6 }
-            0xFE => { let (a,_)=self.addr_absx(bus); let v=bus.cpu_read(a).wrapping_add(1); bus.cpu_write(a,v); self.set_zn(v); 7 }
+            0xE6 => { let (a,_)=self.addr_zpg(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_add(1)); self.set_zn(v); 5 }
+            0xF6 => { let (a,_)=self.addr_zpgx(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_add(1)); self.set_zn(v); 6 }
+            0xEE => { let (a,_)=self.addr_abs(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_add(1)); self.set_zn(v); 6 }
+            0xFE => { let a=self.addr_absx_wr(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_add(1)); self.set_zn(v); 7 }
 
             // ---- DEC ----
-            0xC6 => { let (a,_)=self.addr_zpg(bus); let v=bus.cpu_read(a).wrapping_sub(1); bus.cpu_write(a,v); self.set_zn(v); 5 }
-            0xD6 => { let (a,_)=self.addr_zpgx(bus); let v=bus.cpu_read(a).wrapping_sub(1); bus.cpu_write(a,v); self.set_zn(v); 6 }
-            0xCE => { let (a,_)=self.addr_abs(bus); let v=bus.cpu_read(a).wrapping_sub(1); bus.cpu_write(a,v); self.set_zn(v); 6 }
-            0xDE => { let (a,_)=self.addr_absx(bus); let v=bus.cpu_read(a).wrapping_sub(1); bus.cpu_write(a,v); self.set_zn(v); 7 }
+            0xC6 => { let (a,_)=self.addr_zpg(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_sub(1)); self.set_zn(v); 5 }
+            0xD6 => { let (a,_)=self.addr_zpgx(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_sub(1)); self.set_zn(v); 6 }
+            0xCE => { let (a,_)=self.addr_abs(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_sub(1)); self.set_zn(v); 6 }
+            0xDE => { let a=self.addr_absx_wr(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_sub(1)); self.set_zn(v); 7 }
 
             // ---- INX/INY/DEX/DEY ----
             0xE8 => { self.x=self.x.wrapping_add(1); self.set_zn(self.x); 2 }
@@ -394,28 +429,28 @@ impl Cpu {
             0x06 => { let (a,_)=self.addr_zpg(bus); self.asl_mem(bus,a); 5 }
             0x16 => { let (a,_)=self.addr_zpgx(bus); self.asl_mem(bus,a); 6 }
             0x0E => { let (a,_)=self.addr_abs(bus); self.asl_mem(bus,a); 6 }
-            0x1E => { let (a,_)=self.addr_absx(bus); self.asl_mem(bus,a); 7 }
+            0x1E => { let a=self.addr_absx_wr(bus); self.asl_mem(bus,a); 7 }
 
             // ---- LSR ----
             0x4A => { self.set_flag(C,self.a&1!=0); self.a>>=1; self.set_zn(self.a); 2 }
             0x46 => { let (a,_)=self.addr_zpg(bus); self.lsr_mem(bus,a); 5 }
             0x56 => { let (a,_)=self.addr_zpgx(bus); self.lsr_mem(bus,a); 6 }
             0x4E => { let (a,_)=self.addr_abs(bus); self.lsr_mem(bus,a); 6 }
-            0x5E => { let (a,_)=self.addr_absx(bus); self.lsr_mem(bus,a); 7 }
+            0x5E => { let a=self.addr_absx_wr(bus); self.lsr_mem(bus,a); 7 }
 
             // ---- ROL ----
             0x2A => { let c=self.p&C; self.set_flag(C,self.a&0x80!=0); self.a=(self.a<<1)|c; self.set_zn(self.a); 2 }
             0x26 => { let (a,_)=self.addr_zpg(bus); self.rol_mem(bus,a); 5 }
             0x36 => { let (a,_)=self.addr_zpgx(bus); self.rol_mem(bus,a); 6 }
             0x2E => { let (a,_)=self.addr_abs(bus); self.rol_mem(bus,a); 6 }
-            0x3E => { let (a,_)=self.addr_absx(bus); self.rol_mem(bus,a); 7 }
+            0x3E => { let a=self.addr_absx_wr(bus); self.rol_mem(bus,a); 7 }
 
             // ---- ROR ----
             0x6A => { let c=(self.p&C)<<7; self.set_flag(C,self.a&1!=0); self.a=(self.a>>1)|c; self.set_zn(self.a); 2 }
             0x66 => { let (a,_)=self.addr_zpg(bus); self.ror_mem(bus,a); 5 }
             0x76 => { let (a,_)=self.addr_zpgx(bus); self.ror_mem(bus,a); 6 }
             0x6E => { let (a,_)=self.addr_abs(bus); self.ror_mem(bus,a); 6 }
-            0x7E => { let (a,_)=self.addr_absx(bus); self.ror_mem(bus,a); 7 }
+            0x7E => { let a=self.addr_absx_wr(bus); self.ror_mem(bus,a); 7 }
 
             // ---- BIT ----
             0x24 => { let (a,_)=self.addr_zpg(bus); let v=bus.cpu_read(a); self.set_flag(Z,self.a&v==0); self.p=(self.p&0x3F)|(v&0xC0); 3 }
@@ -478,19 +513,56 @@ impl Cpu {
 
             // ---- Unofficial NOPs (common enough to handle) ----
             0x1A|0x3A|0x5A|0x7A|0xDA|0xFA => 2,
-            0x04|0x44|0x64 => { self.pc+=1; 3 }
-            0x14|0x34|0x54|0x74|0xD4|0xF4 => { self.pc+=1; 4 }
-            0x0C => { self.pc+=2; 4 }
-            0x1C|0x3C|0x5C|0x7C|0xDC|0xFC => { self.pc+=2; 4 }
-            0x80|0x82|0x89|0xC2|0xE2 => { self.pc+=1; 2 }
+            0x04|0x44|0x64 => { let (a,_)=self.addr_zpg(bus); bus.cpu_read(a); 3 }
+            0x14|0x34|0x54|0x74|0xD4|0xF4 => { let (a,_)=self.addr_zpgx(bus); bus.cpu_read(a); 4 }
+            0x0C => { let (a,_)=self.addr_abs(bus); bus.cpu_read(a); 4 }
+            0x1C|0x3C|0x5C|0x7C|0xDC|0xFC => { let (a,c)=self.addr_absx_rd(bus); bus.cpu_read(a); 4+c as u8 }
+            0x80|0x82|0x89|0xC2|0xE2 => { self.addr_imm(bus); 2 }
+
+            // ---- Unofficial immediates ----
+            0xEB => { let (a,_)=self.addr_imm(bus); let v=bus.cpu_read(a); self.adc_impl(v^0xFF); 2 } // SBC
+            0x0B|0x2B => { // ANC: AND, then C = N
+                let (a,_)=self.addr_imm(bus); self.a&=bus.cpu_read(a); self.set_zn(self.a);
+                self.set_flag(C, self.a & 0x80 != 0); 2 }
+            0x4B => { // ALR: AND, then LSR A
+                let (a,_)=self.addr_imm(bus); self.a&=bus.cpu_read(a);
+                self.set_flag(C, self.a & 1 != 0); self.a >>= 1; self.set_zn(self.a); 2 }
+            0x6B => { // ARR: AND, then ROR A with odd C/V
+                let (a,_)=self.addr_imm(bus); self.a&=bus.cpu_read(a);
+                self.a = (self.a >> 1) | ((self.p & C) << 7); self.set_zn(self.a);
+                self.set_flag(C, self.a & 0x40 != 0);
+                self.set_flag(V, ((self.a >> 6) ^ (self.a >> 5)) & 1 != 0); 2 }
+            0xCB => { // AXS/SBX: X = (A & X) - imm, flags like CMP
+                let (a,_)=self.addr_imm(bus); let v=bus.cpu_read(a); let ax=self.a&self.x;
+                self.set_flag(C, ax >= v); self.x = ax.wrapping_sub(v); self.set_zn(self.x); 2 }
+            0xAB => { // LAX #imm (unstable on hardware; this matches common 2A03 behaviour)
+                let (a,_)=self.addr_imm(bus); let v=bus.cpu_read(a);
+                self.a = v; self.x = v; self.set_zn(v); 2 }
+            0x8B => { // XAA (highly unstable): A = X & imm, with the usual $FF magic
+                let (a,_)=self.addr_imm(bus); let v=bus.cpu_read(a);
+                self.a = (self.a | 0xFF) & self.x & v; self.set_zn(self.a); 2 }
+
+            // ---- Unofficial stores / LAS ----
+            0xBB => { // LAS: A = X = SP = mem & SP
+                let (a,c)=self.addr_absy_rd(bus); let v=bus.cpu_read(a) & self.sp;
+                self.a=v; self.x=v; self.sp=v; self.set_zn(v); 4+c as u8 }
+            0x9C => { let b=self.abs_base(bus); let y=self.y; let x=self.x; self.sh_store(bus,b,x,y); 5 } // SHY
+            0x9E => { let b=self.abs_base(bus); let x=self.x; let y=self.y; self.sh_store(bus,b,y,x); 5 } // SHX
+            0x9F => { let b=self.abs_base(bus); let v=self.a&self.x; let y=self.y; self.sh_store(bus,b,y,v); 5 } // SHA abs,Y
+            0x9B => { // TAS: SP = A & X, then store like SHA
+                let b=self.abs_base(bus); self.sp=self.a&self.x; let v=self.sp; let y=self.y;
+                self.sh_store(bus,b,y,v); 5 }
+            0x93 => { // SHA (ind),Y
+                let zp=self.read_pc(bus); let b=self.read16_zp(bus,zp); let v=self.a&self.x; let y=self.y;
+                self.sh_store(bus,b,y,v); 6 }
 
             // ---- LAX (unofficial) ----
             0xA7 => { let (a,_)=self.addr_zpg(bus); let v=bus.cpu_read(a); self.a=v; self.x=v; self.set_zn(v); 3 }
             0xB7 => { let (a,_)=self.addr_zpgy(bus); let v=bus.cpu_read(a); self.a=v; self.x=v; self.set_zn(v); 4 }
             0xAF => { let (a,_)=self.addr_abs(bus); let v=bus.cpu_read(a); self.a=v; self.x=v; self.set_zn(v); 4 }
-            0xBF => { let (a,c)=self.addr_absy(bus); let v=bus.cpu_read(a); self.a=v; self.x=v; self.set_zn(v); 4+c as u8 }
+            0xBF => { let (a,c)=self.addr_absy_rd(bus); let v=bus.cpu_read(a); self.a=v; self.x=v; self.set_zn(v); 4+c as u8 }
             0xA3 => { let (a,_)=self.addr_indx(bus); let v=bus.cpu_read(a); self.a=v; self.x=v; self.set_zn(v); 6 }
-            0xB3 => { let (a,c)=self.addr_indy(bus); let v=bus.cpu_read(a); self.a=v; self.x=v; self.set_zn(v); 5+c as u8 }
+            0xB3 => { let (a,c)=self.addr_indy_rd(bus); let v=bus.cpu_read(a); self.a=v; self.x=v; self.set_zn(v); 5+c as u8 }
 
             // ---- SAX (unofficial) ----
             0x87 => { let (a,_)=self.addr_zpg(bus); bus.cpu_write(a, self.a&self.x); 3 }
@@ -499,58 +571,58 @@ impl Cpu {
             0x83 => { let (a,_)=self.addr_indx(bus); bus.cpu_write(a, self.a&self.x); 6 }
 
             // ---- DCP (unofficial) ----
-            0xC7 => { let (a,_)=self.addr_zpg(bus); let v=bus.cpu_read(a).wrapping_sub(1); bus.cpu_write(a,v); self.cmp(self.a,v); 5 }
-            0xD7 => { let (a,_)=self.addr_zpgx(bus); let v=bus.cpu_read(a).wrapping_sub(1); bus.cpu_write(a,v); self.cmp(self.a,v); 6 }
-            0xCF => { let (a,_)=self.addr_abs(bus); let v=bus.cpu_read(a).wrapping_sub(1); bus.cpu_write(a,v); self.cmp(self.a,v); 6 }
-            0xDF => { let (a,_)=self.addr_absx(bus); let v=bus.cpu_read(a).wrapping_sub(1); bus.cpu_write(a,v); self.cmp(self.a,v); 7 }
-            0xDB => { let (a,_)=self.addr_absy(bus); let v=bus.cpu_read(a).wrapping_sub(1); bus.cpu_write(a,v); self.cmp(self.a,v); 7 }
-            0xC3 => { let (a,_)=self.addr_indx(bus); let v=bus.cpu_read(a).wrapping_sub(1); bus.cpu_write(a,v); self.cmp(self.a,v); 8 }
-            0xD3 => { let (a,_)=self.addr_indy(bus); let v=bus.cpu_read(a).wrapping_sub(1); bus.cpu_write(a,v); self.cmp(self.a,v); 8 }
+            0xC7 => { let (a,_)=self.addr_zpg(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_sub(1)); self.cmp(self.a,v); 5 }
+            0xD7 => { let (a,_)=self.addr_zpgx(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_sub(1)); self.cmp(self.a,v); 6 }
+            0xCF => { let (a,_)=self.addr_abs(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_sub(1)); self.cmp(self.a,v); 6 }
+            0xDF => { let a=self.addr_absx_wr(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_sub(1)); self.cmp(self.a,v); 7 }
+            0xDB => { let a=self.addr_absy_wr(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_sub(1)); self.cmp(self.a,v); 7 }
+            0xC3 => { let (a,_)=self.addr_indx(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_sub(1)); self.cmp(self.a,v); 8 }
+            0xD3 => { let a=self.addr_indy_wr(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_sub(1)); self.cmp(self.a,v); 8 }
 
             // ---- ISB / ISC (unofficial) ----
-            0xE7 => { let (a,_)=self.addr_zpg(bus); let v=bus.cpu_read(a).wrapping_add(1); bus.cpu_write(a,v); self.adc_impl(v^0xFF); 5 }
-            0xF7 => { let (a,_)=self.addr_zpgx(bus); let v=bus.cpu_read(a).wrapping_add(1); bus.cpu_write(a,v); self.adc_impl(v^0xFF); 6 }
-            0xEF => { let (a,_)=self.addr_abs(bus); let v=bus.cpu_read(a).wrapping_add(1); bus.cpu_write(a,v); self.adc_impl(v^0xFF); 6 }
-            0xFF => { let (a,_)=self.addr_absx(bus); let v=bus.cpu_read(a).wrapping_add(1); bus.cpu_write(a,v); self.adc_impl(v^0xFF); 7 }
-            0xFB => { let (a,_)=self.addr_absy(bus); let v=bus.cpu_read(a).wrapping_add(1); bus.cpu_write(a,v); self.adc_impl(v^0xFF); 7 }
-            0xE3 => { let (a,_)=self.addr_indx(bus); let v=bus.cpu_read(a).wrapping_add(1); bus.cpu_write(a,v); self.adc_impl(v^0xFF); 8 }
-            0xF3 => { let (a,_)=self.addr_indy(bus); let v=bus.cpu_read(a).wrapping_add(1); bus.cpu_write(a,v); self.adc_impl(v^0xFF); 8 }
+            0xE7 => { let (a,_)=self.addr_zpg(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_add(1)); self.adc_impl(v^0xFF); 5 }
+            0xF7 => { let (a,_)=self.addr_zpgx(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_add(1)); self.adc_impl(v^0xFF); 6 }
+            0xEF => { let (a,_)=self.addr_abs(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_add(1)); self.adc_impl(v^0xFF); 6 }
+            0xFF => { let a=self.addr_absx_wr(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_add(1)); self.adc_impl(v^0xFF); 7 }
+            0xFB => { let a=self.addr_absy_wr(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_add(1)); self.adc_impl(v^0xFF); 7 }
+            0xE3 => { let (a,_)=self.addr_indx(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_add(1)); self.adc_impl(v^0xFF); 8 }
+            0xF3 => { let a=self.addr_indy_wr(bus); let v=self.rmw(bus,a,|_,v| v.wrapping_add(1)); self.adc_impl(v^0xFF); 8 }
 
             // ---- SLO (unofficial) ----
             0x07 => { let (a,_)=self.addr_zpg(bus); self.slo(bus,a); 5 }
             0x17 => { let (a,_)=self.addr_zpgx(bus); self.slo(bus,a); 6 }
             0x0F => { let (a,_)=self.addr_abs(bus); self.slo(bus,a); 6 }
-            0x1F => { let (a,_)=self.addr_absx(bus); self.slo(bus,a); 7 }
-            0x1B => { let (a,_)=self.addr_absy(bus); self.slo(bus,a); 7 }
+            0x1F => { let a=self.addr_absx_wr(bus); self.slo(bus,a); 7 }
+            0x1B => { let a=self.addr_absy_wr(bus); self.slo(bus,a); 7 }
             0x03 => { let (a,_)=self.addr_indx(bus); self.slo(bus,a); 8 }
-            0x13 => { let (a,_)=self.addr_indy(bus); self.slo(bus,a); 8 }
+            0x13 => { let a=self.addr_indy_wr(bus); self.slo(bus,a); 8 }
 
             // ---- RLA (unofficial) ----
             0x27 => { let (a,_)=self.addr_zpg(bus); self.rla(bus,a); 5 }
             0x37 => { let (a,_)=self.addr_zpgx(bus); self.rla(bus,a); 6 }
             0x2F => { let (a,_)=self.addr_abs(bus); self.rla(bus,a); 6 }
-            0x3F => { let (a,_)=self.addr_absx(bus); self.rla(bus,a); 7 }
-            0x3B => { let (a,_)=self.addr_absy(bus); self.rla(bus,a); 7 }
+            0x3F => { let a=self.addr_absx_wr(bus); self.rla(bus,a); 7 }
+            0x3B => { let a=self.addr_absy_wr(bus); self.rla(bus,a); 7 }
             0x23 => { let (a,_)=self.addr_indx(bus); self.rla(bus,a); 8 }
-            0x33 => { let (a,_)=self.addr_indy(bus); self.rla(bus,a); 8 }
+            0x33 => { let a=self.addr_indy_wr(bus); self.rla(bus,a); 8 }
 
             // ---- SRE (unofficial) ----
             0x47 => { let (a,_)=self.addr_zpg(bus); self.sre(bus,a); 5 }
             0x57 => { let (a,_)=self.addr_zpgx(bus); self.sre(bus,a); 6 }
             0x4F => { let (a,_)=self.addr_abs(bus); self.sre(bus,a); 6 }
-            0x5F => { let (a,_)=self.addr_absx(bus); self.sre(bus,a); 7 }
-            0x5B => { let (a,_)=self.addr_absy(bus); self.sre(bus,a); 7 }
+            0x5F => { let a=self.addr_absx_wr(bus); self.sre(bus,a); 7 }
+            0x5B => { let a=self.addr_absy_wr(bus); self.sre(bus,a); 7 }
             0x43 => { let (a,_)=self.addr_indx(bus); self.sre(bus,a); 8 }
-            0x53 => { let (a,_)=self.addr_indy(bus); self.sre(bus,a); 8 }
+            0x53 => { let a=self.addr_indy_wr(bus); self.sre(bus,a); 8 }
 
             // ---- RRA (unofficial) ----
             0x67 => { let (a,_)=self.addr_zpg(bus); self.rra(bus,a); 5 }
             0x77 => { let (a,_)=self.addr_zpgx(bus); self.rra(bus,a); 6 }
             0x6F => { let (a,_)=self.addr_abs(bus); self.rra(bus,a); 6 }
-            0x7F => { let (a,_)=self.addr_absx(bus); self.rra(bus,a); 7 }
-            0x7B => { let (a,_)=self.addr_absy(bus); self.rra(bus,a); 7 }
+            0x7F => { let a=self.addr_absx_wr(bus); self.rra(bus,a); 7 }
+            0x7B => { let a=self.addr_absy_wr(bus); self.rra(bus,a); 7 }
             0x63 => { let (a,_)=self.addr_indx(bus); self.rra(bus,a); 8 }
-            0x73 => { let (a,_)=self.addr_indy(bus); self.rra(bus,a); 8 }
+            0x73 => { let a=self.addr_indy_wr(bus); self.rra(bus,a); 8 }
 
             // Catch-all NOP for anything else
             _ => {
@@ -568,62 +640,84 @@ impl Cpu {
         self.set_zn(result);
     }
 
-    fn asl_mem(&mut self, bus: &mut Bus, addr: u16) {
+    /// Read-modify-write: read, write the unmodified value back (the real
+    /// 6502's dummy write — MMC1 and PPU registers can see it), then write
+    /// the result. Returns the result.
+    fn rmw(&mut self, bus: &mut Bus, addr: u16, f: impl FnOnce(&mut Self, u8) -> u8) -> u8 {
         let v = bus.cpu_read(addr);
-        self.set_flag(C, v & 0x80 != 0);
-        let r = v << 1;
+        bus.cpu_write(addr, v);
+        let r = f(self, v);
         bus.cpu_write(addr, r);
-        self.set_zn(r);
+        r
     }
 
-    fn lsr_mem(&mut self, bus: &mut Bus, addr: u16) {
-        let v = bus.cpu_read(addr);
-        self.set_flag(C, v & 1 != 0);
-        let r = v >> 1;
-        bus.cpu_write(addr, r);
+    fn asl_mem(&mut self, bus: &mut Bus, addr: u16) -> u8 {
+        let r = self.rmw(bus, addr, |cpu, v| { cpu.set_flag(C, v & 0x80 != 0); v << 1 });
         self.set_zn(r);
+        r
     }
 
-    fn rol_mem(&mut self, bus: &mut Bus, addr: u16) {
-        let v = bus.cpu_read(addr);
-        let c = self.p & C;
-        self.set_flag(C, v & 0x80 != 0);
-        let r = (v << 1) | c;
-        bus.cpu_write(addr, r);
+    fn lsr_mem(&mut self, bus: &mut Bus, addr: u16) -> u8 {
+        let r = self.rmw(bus, addr, |cpu, v| { cpu.set_flag(C, v & 1 != 0); v >> 1 });
         self.set_zn(r);
+        r
     }
 
-    fn ror_mem(&mut self, bus: &mut Bus, addr: u16) {
-        let v = bus.cpu_read(addr);
-        let c = (self.p & C) << 7;
-        self.set_flag(C, v & 1 != 0);
-        let r = (v >> 1) | c;
-        bus.cpu_write(addr, r);
+    fn rol_mem(&mut self, bus: &mut Bus, addr: u16) -> u8 {
+        let r = self.rmw(bus, addr, |cpu, v| {
+            let c = cpu.p & C;
+            cpu.set_flag(C, v & 0x80 != 0);
+            (v << 1) | c
+        });
         self.set_zn(r);
+        r
+    }
+
+    fn ror_mem(&mut self, bus: &mut Bus, addr: u16) -> u8 {
+        let r = self.rmw(bus, addr, |cpu, v| {
+            let c = (cpu.p & C) << 7;
+            cpu.set_flag(C, v & 1 != 0);
+            (v >> 1) | c
+        });
+        self.set_zn(r);
+        r
     }
 
     fn slo(&mut self, bus: &mut Bus, addr: u16) {
-        self.asl_mem(bus, addr);
-        self.a |= bus.cpu_read(addr);
+        self.a |= self.asl_mem(bus, addr);
         self.set_zn(self.a);
     }
 
     fn rla(&mut self, bus: &mut Bus, addr: u16) {
-        self.rol_mem(bus, addr);
-        self.a &= bus.cpu_read(addr);
+        self.a &= self.rol_mem(bus, addr);
         self.set_zn(self.a);
     }
 
     fn sre(&mut self, bus: &mut Bus, addr: u16) {
-        self.lsr_mem(bus, addr);
-        self.a ^= bus.cpu_read(addr);
+        self.a ^= self.lsr_mem(bus, addr);
         self.set_zn(self.a);
     }
 
     fn rra(&mut self, bus: &mut Bus, addr: u16) {
-        self.ror_mem(bus, addr);
-        let v = bus.cpu_read(addr);
+        let v = self.ror_mem(bus, addr);
         self.adc_impl(v);
+    }
+
+    /// SHX/SHY/SHA/TAS: store `val & (H+1)` where H is the base address's high
+    /// byte; on a page cross the corrupted value also replaces the high byte.
+    fn sh_store(&mut self, bus: &mut Bus, base: u16, index: u8, val: u8) {
+        let addr = base.wrapping_add(index as u16);
+        let crossed = (base & 0xFF00) != (addr & 0xFF00);
+        bus.cpu_read((base & 0xFF00) | (addr & 0x00FF)); // dummy read
+        let v = val & ((base >> 8) as u8).wrapping_add(1);
+        let addr = if crossed { ((v as u16) << 8) | (addr & 0x00FF) } else { addr };
+        bus.cpu_write(addr, v);
+    }
+
+    fn abs_base(&mut self, bus: &mut Bus) -> u16 {
+        let lo = self.read_pc(bus) as u16;
+        let hi = self.read_pc(bus) as u16;
+        (hi << 8) | lo
     }
 }
 

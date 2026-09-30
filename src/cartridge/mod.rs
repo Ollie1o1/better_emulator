@@ -1,6 +1,6 @@
 pub mod mappers;
 
-use mappers::{Mapper000, Mapper001, Mapper002, MapperEnum};
+use mappers::{Mapper000, Mapper001, Mapper002, Mapper003, Mapper004, Mapper007, MapperEnum};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Mirroring {
@@ -38,6 +38,13 @@ pub struct Cartridge {
     pub has_battery: bool,
     pub mapper: MapperEnum,
     pub base_mirroring: Mirroring,
+    /// CPU cycle of the last write to $8000-$FFFF (MMC1 ignores back-to-back writes).
+    last_rom_write: u64,
+    /// Current CPU cycle, kept up to date by the bus.
+    pub cpu_cycle: u64,
+    /// PPU address line A12 state, and the PPU dot it last went low.
+    a12_high: bool,
+    a12_low_since: u64,
 }
 
 impl Cartridge {
@@ -85,6 +92,9 @@ impl Cartridge {
             0 => Mapper000::new(prg_banks as u8, chr_banks as u8, mirroring).into(),
             1 => Mapper001::new(prg_banks as u8, chr_banks as u8, mirroring).into(),
             2 => Mapper002::new(prg_banks as u8, mirroring).into(),
+            3 => Mapper003::new(prg_banks as u8, chr_banks as u8, mirroring).into(),
+            4 => Mapper004::new(prg_banks as u8, chr_banks as u8, mirroring).into(),
+            7 => Mapper007::new(prg_banks as u8).into(),
             _ => return Err(CartridgeError::UnsupportedMapper(mapper_id)),
         };
 
@@ -101,20 +111,38 @@ impl Cartridge {
             has_battery,
             mapper,
             base_mirroring: mirroring,
+            last_rom_write: 0,
+            cpu_cycle: 0,
+            a12_high: false,
+            a12_low_since: 0,
         })
     }
 
     pub fn cpu_read(&self, addr: u16) -> u8 {
+        self.cpu_read_mapped(addr).unwrap_or(0)
+    }
+
+    /// Cartridge read; `None` when nothing drives the bus (open bus).
+    pub fn cpu_read_mapped(&self, addr: u16) -> Option<u8> {
         use mappers::MappedAddr;
         match self.mapper.cpu_map_read(addr) {
-            MappedAddr::PrgRom(i) => self.prg_rom.get(i).copied().unwrap_or(0),
-            MappedAddr::PrgRam(i) => self.prg_ram.get(i).copied().unwrap_or(0),
-            MappedAddr::None => 0,
+            MappedAddr::PrgRom(i) => self.prg_rom.get(i).copied(),
+            MappedAddr::PrgRam(i) => self.prg_ram.get(i).copied(),
+            MappedAddr::None => None,
         }
     }
 
     pub fn cpu_write(&mut self, addr: u16, val: u8) {
         use mappers::MappedAddr;
+        if addr >= 0x8000 {
+            // MMC1's serial port ignores a write on the cycle right after
+            // another (the dummy write of an RMW instruction like INC $8000).
+            let back_to_back = self.cpu_cycle == self.last_rom_write + 1;
+            self.last_rom_write = self.cpu_cycle;
+            if back_to_back && matches!(self.mapper, MapperEnum::M001(_)) {
+                return;
+            }
+        }
         match self.mapper.cpu_map_write(addr, val) {
             MappedAddr::PrgRam(i) => {
                 if i < self.prg_ram.len() {
@@ -145,6 +173,22 @@ impl Cartridge {
 
     pub fn mirroring(&self) -> Mirroring {
         self.mapper.mirroring()
+    }
+
+    /// Every address the PPU puts on its bus. MMC3 clocks its scanline
+    /// counter on A12 rising edges, ignoring edges unless A12 has been low
+    /// for a few CPU cycles (so the 8 back-to-back sprite fetches of one
+    /// line count once).
+    pub fn ppu_bus_address(&mut self, addr: u16, ppu_dot: u64) {
+        const MIN_LOW_DOTS: u64 = 10; // ~3 CPU cycles
+        let high = addr & 0x1000 != 0;
+        if high && !self.a12_high && ppu_dot.saturating_sub(self.a12_low_since) >= MIN_LOW_DOTS {
+            self.mapper.scanline();
+        }
+        if !high && self.a12_high {
+            self.a12_low_since = ppu_dot;
+        }
+        self.a12_high = high;
     }
 
     pub fn irq_active(&self) -> bool {

@@ -1,15 +1,6 @@
-mod bus;
-mod cpu;
-mod ppu;
-mod apu;
-mod cartridge;
-mod controller;
-mod emulator;
 mod ui;
 
-use emulator::Emulator;
-use controller::buttons;
-use ppu::{SCREEN_WIDTH, SCREEN_HEIGHT};
+use nes_emulator::{buttons, Emulator, SCREEN_HEIGHT, SCREEN_WIDTH};
 use ui::{BAR_W, BAR_H};
 
 use sdl2::pixels::PixelFormatEnum;
@@ -19,10 +10,31 @@ use sdl2::audio::{AudioQueue, AudioSpecDesired};
 use sdl2::rect::Rect;
 use sdl2::render::BlendMode;
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::path::Path;
 
 const AUDIO_SAMPLE_RATE: u32 = 44100;
+
+// NTSC NES frame rate. Frames are paced against the wall clock rather than
+// vsync, so a 120 Hz (ProMotion) or 144 Hz display doesn't run games fast.
+const NES_FPS: f64 = 60.0988;
+
+/// Battery save path: `game.nes` → `game.sav` alongside the ROM.
+fn sav_path_for(rom_path: &str) -> String {
+    match rom_path.strip_suffix(".nes") {
+        Some(stem) => format!("{}.sav", stem),
+        None => format!("{}.sav", rom_path),
+    }
+}
+
+fn save_battery(emu: &Emulator, sav_path: &str) {
+    if let Some(ram) = emu.battery_ram() {
+        match std::fs::write(sav_path, ram) {
+            Ok(_) => log::info!("Saved battery RAM to {}", sav_path),
+            Err(e) => eprintln!("Failed to save battery RAM to {}: {}", sav_path, e),
+        }
+    }
+}
 
 // NES pixels are 8:7 — displayed width must be stretched for correct aspect ratio.
 // 256 * (8/7) ≈ 292 wide, 240 tall.
@@ -67,10 +79,18 @@ fn main() {
         Err(e) => { eprintln!("Failed to read '{}': {}", rom_path, e); std::process::exit(1); }
     };
 
-    let mut emu = match Emulator::new(&rom_data, AUDIO_SAMPLE_RATE, rom_path) {
+    let mut emu = match Emulator::new(&rom_data, AUDIO_SAMPLE_RATE) {
         Ok(e) => e,
         Err(e) => { eprintln!("Failed to load ROM: {}", e); std::process::exit(1); }
     };
+
+    let sav_path = sav_path_for(rom_path);
+    if emu.battery_ram().is_some() {
+        if let Ok(data) = std::fs::read(&sav_path) {
+            emu.load_battery_ram(&data);
+            log::info!("Loaded battery save from {}", sav_path);
+        }
+    }
 
     // ── SDL2 init ──────────────────────────────────────────────────────────────
     let sdl       = sdl2::init().expect("SDL2 init");
@@ -87,7 +107,6 @@ fn main() {
     let mut canvas = window
         .into_canvas()
         .accelerated()
-        .present_vsync()
         .build()
         .expect("Canvas");
 
@@ -129,14 +148,18 @@ fn main() {
     let mut fps_frames = 0u32;
     let mut fps        = 60.0f32;
 
+    let frame_time     = Duration::from_secs_f64(1.0 / NES_FPS);
+    let mut next_frame = Instant::now();
+
     'main: loop {
 
         // ── Events ────────────────────────────────────────────────────────────
         for event in event_pump.poll_iter() {
             match event {
-                Event::Quit { .. } => { emu.save_battery(); break 'main; }
+                Event::Quit { .. } => { save_battery(&emu, &sav_path); break 'main; }
                 Event::KeyDown { keycode: Some(k), .. } => match k {
-                    Keycode::Escape => { emu.save_battery(); break 'main; }
+                    Keycode::Escape => { save_battery(&emu, &sav_path); break 'main; }
+                    Keycode::F5 => emu.reset(),
                     Keycode::RightBracket => volume = (volume + 0.1).min(1.0),
                     Keycode::LeftBracket  => volume = (volume - 0.1).max(0.0),
                     _ => {}
@@ -188,7 +211,16 @@ fn main() {
         if ks.is_scancode_pressed(Scancode::Kp9) { btn2 |= buttons::RIGHT; }
         emu.bus.controller2.buttons = btn2;
 
-        // ── Emulate one frame ─────────────────────────────────────────────────
+        // ── Emulate one frame (paced to the NES's own 60.1 Hz) ────────────────
+        let now = Instant::now();
+        if now < next_frame {
+            // Display refreshes faster than the NES — sleep off the remainder.
+            std::thread::sleep(next_frame - now);
+        } else if now - next_frame > frame_time * 4 {
+            // Fell far behind (window drag, breakpoint): resync, don't fast-forward.
+            next_frame = now;
+        }
+        next_frame += frame_time;
         emu.run_frame();
 
         // ── Post-process game frame: scanlines + contrast boost ────────────────

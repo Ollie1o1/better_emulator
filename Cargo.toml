@@ -1,17 +1,28 @@
 [package]
 name = "nes_emulator"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+
+[lib]
+name = "nes_emulator"
+path = "src/lib.rs"
 
 [[bin]]
 name = "nes"
 path = "src/main.rs"
+required-features = ["sdl"]
+
+[features]
+default = ["sdl"]
+# Desktop frontend. Links against a system SDL2 (e.g. `brew install sdl2`).
+sdl = ["dep:sdl2", "dep:env_logger"]
+# Build SDL2 from source instead (needs CMake) — the easy path on Windows.
+bundled = ["sdl", "sdl2/bundled"]
 
 [dependencies]
-sdl2 = { version = "0.37", features = ["bundled"] }
-bitflags = "2.6"
 log = "0.4"
-env_logger = "0.11"
+sdl2 = { version = "0.37", optional = true }
+env_logger = { version = "0.11", optional = true }
 
 [profile.release]
 opt-level = 3
