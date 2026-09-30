@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/Ollie1o1/better_emulator/actions/workflows/ci.yml/badge.svg)](https://github.com/Ollie1o1/better_emulator/actions/workflows/ci.yml)
 
+**[▶ Play it in your browser](https://oliver-raczka.vercel.app/work/nes-emulator/#play)**, no install needed.
+
 ![Thwaite running in the emulator: the crosshair sweeps the sky and intercepts incoming missiles](docs/thwaite.gif)
 
 A Nintendo Entertainment System emulator written in Rust: 6502 CPU, PPU, APU
