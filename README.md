@@ -51,7 +51,7 @@ cargo run --release --features bundled -- roms\thwaite.nes
 ### Play in the browser
 
 ```bash
-./web/build.sh                          # → web/dist/ (72 KB .wasm + JS + ROMs)
+./web/build.sh                          # → web/dist/ (73 KB .wasm + JS + ROMs)
 python3 -m http.server -d web/dist 8000 # open http://localhost:8000
 ```
 
@@ -115,6 +115,7 @@ src/
 web/                     # WebAssembly build + browser player
 examples/snapshot.rs     # Headless: run N frames with scripted input, save a PPM
 tests/test_roms.rs       # Accuracy suite (the table above)
+tests/robustness.rs      # Random code on every mapper and header flag; must never panic
 ```
 
 Design notes:
